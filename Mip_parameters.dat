@@ -1,0 +1,44 @@
+# --------------------------------------------------------------------------
+# 1. Sets (Indices)
+# --------------------------------------------------------------------------
+
+set J := 1 2 3 4 ; # Orders (4 total)
+
+set I_max := A B ; # Maximum Pool of Operators (2 total)
+
+# J_prime must include the Base node 0 plus all Orders J
+set J_prime := 0 1 2 3 4 ; 
+
+# --------------------------------------------------------------------------
+# 2. Parameters (Costs, Weights, Capacity)
+# --------------------------------------------------------------------------
+
+param H_fixed := 480 ;  # Shift Capacity (e.g., 8 hours = 480 minutes)
+param Alpha := 1.0 ;    # Weight for Makespan (Z)
+param Beta := 1.0 ;   # Weight for Operator Count (y_i)
+param M := 10000 ;      # Big-M constant
+
+# --------------------------------------------------------------------------
+# 3. Parameter Tables (Matrices)
+# --------------------------------------------------------------------------
+
+# Processing Time P[i, j]: Time operator i takes for order j
+
+#param P :=
+#[A, *]  1 20   2 15   3 30   4 18
+#[B, *]  1 25   2 10   3 20   4 22 ;
+
+param P : 1  2  3  4 :=
+      A  20 15 30 18
+      B  25 10 20 22 ;
+
+# Travel Time T[j, k]: Time to travel from j to k
+# Note: j=0 is the Base Depot
+
+param T : 0  1  2  3  4 :=
+    0  .  5  8  4  7  # From Base (0) to orders
+    1  6  .  3  7  2
+    2  4  3  .  5  4
+    3  5  7  5  .  9
+    4  7  2  4  9  . ; # Return to Base (0) from orders
+    # T[j, 0] is the travel time back to Base
