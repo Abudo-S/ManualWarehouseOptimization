@@ -6,7 +6,6 @@ class ParameterDataLoader:
         self.mission_batch_df = mission_batch_df
         self.mission_batch_travel_df = mission_batch_travel_df
         self.fork_lifts_df = fork_lifts_df
-        self.mission_types_df = mission_types_df
 
 
 
