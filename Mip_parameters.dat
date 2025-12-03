@@ -15,7 +15,7 @@ set J_prime := 0 1 2 3 4 ;
 
 param H_fixed := 480 ;  # Shift Capacity (e.g., 8 hours = 480 minutes)
 param Alpha := 1.0 ;    # Weight for Makespan (Z)
-param Beta := 1.0 ;   # Weight for Operator Count (y_i)
+param Beta := 1.0 ;   # Weight for Operator Count (y_i)#100.0
 param M := 10000 ;      # Big-M constant
 
 # --------------------------------------------------------------------------

@@ -5,10 +5,10 @@ class MultiCriteriaMIPModel:
     Mixed-Integer Programming (MIP) model for minimizing makespan and number of operators used
     in a manual warehouse order picking scenario.
     '''
-
     def __init__(self):
         '''
         Initialize the MIP model with variables, objective function and constraints.
+        Values for sets and parameters will be provided later via data files or data portals.
         '''
         model = AbstractModel()
 
@@ -25,6 +25,38 @@ class MultiCriteriaMIPModel:
         model.Alpha = Param()                        #makespan weight (for Z)
         model.Beta = Param()                         #Operator count weight (for sum of y_i)
         model.M = Param()                            #big-M constant (ex. 10000)
+    
+    def __init__(self, 
+                 missions,
+                 operators, 
+                 missions_with_base,
+                 processing_times,
+                 travel_times,
+                 skill_scores,
+                 h_fixed=480,
+                 alpha=1.0,
+                 beta=1.0, #100
+                 M=10000
+                ):
+        '''
+        Initialize the MIP model with variables, objective function and constraints.
+        Values are provided via constructor arguments for sets and parameters.
+        '''
+        model = ConcreteModel()
+
+        #MIP Definition
+        #Sets
+        model.J = Set(initialize=missions)                   #orders/missions
+        model.I_max = Set(initialize=operators)              #maximum pool of operators
+        model.J_prime = Set(initialize=missions_with_base)   #(missions + virtual base node)
+
+        #Parameters
+        model.P = Param(model.I_max, model.J, initialize=processing_times)         #processing Time: P[i, j]
+        model.T = Param(model.J_prime, model.J_prime, initialize=travel_times)     #travel Time: T[j, k] (distance matrix)
+        model.H_fixed = Param(initialize=h_fixed)                                  #fixed shift capacity (ex. 480 minutes)
+        model.Alpha = Param(initialize=alpha)                                      #makespan weight (for Z)
+        model.Beta = Param(initialize=beta)                                        #Operator count weight (for sum of y_i)
+        model.M = Param(initialize=M)                                              #big-M constant (ex. 10000)
 
         #Binary Variables
         #y[i]: 1 if operator i is activated/used
@@ -196,7 +228,7 @@ class MultiCriteriaMIPModel:
 
         self.model = model
 
-    def solve(self, data_file, solver_name='glpk'):
+    def solve(self, data_file:str, solver_name='glpk'):
         '''
         data_file: path to the data file for the MIP model parameters.
         Solve the MIP model with the provided data file.
@@ -208,6 +240,24 @@ class MultiCriteriaMIPModel:
         #instance = model.create_instance(data)
 
         instance = self.model.create_instance(data_file)
+        #SolverFactory("gurobi", solver_io="direct")
+        solver = SolverFactory(solver_name) 
+        #solver.solve(model, tee=True) # 'tee=True' prints the gurobi log to the console
+        results = solver.solve(instance)
+        return instance, results
+    
+    def solve(self, data_portal:DataPortal, solver_name='glpk'):
+        '''
+        data_portal: the data portal object that contains all parameters data.
+        Solve the MIP model with the provided data_portal.
+        sorver_name: name of the solver to use {glpk, cbc, groubi} (default: 'glpk').
+        '''
+        #it's possible to use dataPortal to load data directly from a dictionary or other sources
+        #data = DataPortal(model=self.model)
+        #data.load(name='P', data=P_data) #P_data should have the same dimensions as model.P
+        #instance = model.create_instance(data)
+
+        instance = self.model.create_instance(data_portal)
         #SolverFactory("gurobi", solver_io="direct")
         solver = SolverFactory(solver_name) 
         #solver.solve(model, tee=True) # 'tee=True' prints the gurobi log to the console
