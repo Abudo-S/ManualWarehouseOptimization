@@ -51,12 +51,13 @@ class MultiCriteriaMIPModel:
         model.J_prime = Set(initialize=missions_with_base)   #(missions + virtual base node)
 
         #Parameters
-        model.P = Param(model.I_max, model.J, initialize=processing_times)         #processing Time: P[i, j]
-        model.T = Param(model.J_prime, model.J_prime, initialize=travel_times)     #travel Time: T[j, k] (distance matrix)
-        model.H_fixed = Param(initialize=h_fixed)                                  #fixed shift capacity (ex. 480 minutes)
-        model.Alpha = Param(initialize=alpha)                                      #makespan weight (for Z)
-        model.Beta = Param(initialize=beta)                                        #Operator count weight (for sum of y_i)
-        model.M = Param(initialize=M)                                              #big-M constant (ex. 10000)
+        #in case of missing data, use big-M as default value (so the corresponding assignment/sequencing will be avoided in optimal solution)
+        model.M = Param(initialize=M)                                                               #big-M constant (ex. 10000)
+        model.P = Param(model.I_max, model.J, initialize=processing_times, default=model.M)         #processing Time: P[i, j]
+        model.T = Param(model.J_prime, model.J_prime, initialize=travel_times, default=model.M)     #travel Time: T[j, k] (distance matrix)
+        model.H_fixed = Param(initialize=h_fixed)                                                   #fixed shift capacity (ex. 480 minutes)
+        model.Alpha = Param(initialize=alpha)                                                       #makespan weight (for Z)
+        model.Beta = Param(initialize=beta)                                                         #Operator count weight (for sum of y_i)
 
         #Binary Variables
         #y[i]: 1 if operator i is activated/used
@@ -263,9 +264,9 @@ class MultiCriteriaMIPModel:
 
         return results
     
-    def display_solution(self, instance):
+    def display_solution(self, instance = None):
         '''
         Display the solution of the MIP model.
         '''
-        instance.display()
+        instance.display() if instance is not None else self.model.display()
     
