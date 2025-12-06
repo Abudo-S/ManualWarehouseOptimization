@@ -92,8 +92,6 @@ class MultiCriteriaMIPModel:
             '''
             return model.Alpha * model.Z + model.Beta * sum(model.y[i] for i in model.I_max)
 
-        model.Objective = Objective(rule=objective_rule, sense=minimize)
-
         #Constraints
         #scheduling and time constraints
         def completion_time_rule(model, j):
@@ -112,10 +110,6 @@ class MultiCriteriaMIPModel:
                 return model.S[k] >= model.C[j] + model.T[j, k] - model.M * (1 - model.z[i, j, k])
             
             return Constraint.Skip
-
-
-        model.Sequencing = Constraint(model.I_max, model.J, model.J, rule=sequencing_rule)
-        model.CompletionTime = Constraint(model.J, rule=completion_time_rule)
 
         #mission assignment and flow onstraints
         def assignment_rule(model, j):
@@ -192,15 +186,6 @@ class MultiCriteriaMIPModel:
             
             return inflow_to_base == model.y[i]
 
-        model.Assignment = Constraint(model.J, rule=assignment_rule)
-        #model.FlowConservation = Constraint(model.I_max, model.J, rule=flow_conservation_rule)
-        model.FlowInflowOutflow = Constraint(model.I_max, model.J, rule=flow_in_out_rule)
-        model.FlowAssignment = Constraint(model.I_max, model.J, rule=flow_assignment_rule)
-
-        #model.BaseFlow = Constraint(model.I_max, rule=base_flow_rule)
-        model.BaseOutflow = Constraint(model.I_max, rule=base_outflow_rule)
-        model.BaseInflow = Constraint(model.I_max, rule=base_inflow_rule)
-
         #resource capacity and makespan constraints
         def c_last_rule(model, i, j):
             '''
@@ -222,47 +207,61 @@ class MultiCriteriaMIPModel:
             '''
             return model.Z >= model.C_last[i]
 
+        #assign objective and constraints to the model
+        model.Objective = Objective(rule=objective_rule, sense=minimize)
+        model.Sequencing = Constraint(model.I_max, model.J, model.J, rule=sequencing_rule)
+        model.CompletionTime = Constraint(model.J, rule=completion_time_rule)
+
+        model.Assignment = Constraint(model.J, rule=assignment_rule)
+        #model.FlowConservation = Constraint(model.I_max, model.J, rule=flow_conservation_rule)
+        model.FlowInflowOutflow = Constraint(model.I_max, model.J, rule=flow_in_out_rule)
+        model.FlowAssignment = Constraint(model.I_max, model.J, rule=flow_assignment_rule)
+
+        #model.BaseFlow = Constraint(model.I_max, rule=base_flow_rule)
+        model.BaseOutflow = Constraint(model.I_max, rule=base_outflow_rule)
+        model.BaseInflow = Constraint(model.I_max, rule=base_inflow_rule)
         model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
         model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
         model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
 
         self.model = model
 
-    def solve(self, data_file:str, solver_name='glpk'):
+    def solve(self, data_file:str, data_portal:DataPortal = None, solver_name='glpk'):
         '''
         data_file: path to the data file for the MIP model parameters.
         Solve the MIP model with the provided data file.
         sorver_name: name of the solver to use {glpk, cbc, groubi} (default: 'glpk').
         '''
+
+        assert isinstance(self.model, AbstractModel), "the model must be an AbstractModel to use data files!"
+        
         #it's possible to use dataPortal to load data directly from a dictionary or other sources
         #data = DataPortal(model=self.model)
         #data.load(name='P', data=P_data) #P_data should have the same dimensions as model.P
         #instance = model.create_instance(data)
 
-        instance = self.model.create_instance(data_file)
+        instance = self.model.create_instance(data_portal) if data_portal is not None else self.model.create_instance(data_file)
+
         #SolverFactory("gurobi", solver_io="direct")
         solver = SolverFactory(solver_name) 
-        #solver.solve(model, tee=True) # 'tee=True' prints the gurobi log to the console
-        results = solver.solve(instance)
+        results = solver.solve(self.model, tee=True) # 'tee=True' prints the solver log to the console
+
         return instance, results
     
-    def solve(self, data_portal:DataPortal, solver_name='glpk'):
+    def solve(self, solver_name='glpk'):
         '''
         data_portal: the data portal object that contains all parameters data.
         Solve the MIP model with the provided data_portal.
         sorver_name: name of the solver to use {glpk, cbc, groubi} (default: 'glpk').
         '''
-        #it's possible to use dataPortal to load data directly from a dictionary or other sources
-        #data = DataPortal(model=self.model)
-        #data.load(name='P', data=P_data) #P_data should have the same dimensions as model.P
-        #instance = model.create_instance(data)
 
-        instance = self.model.create_instance(data_portal)
+        assert isinstance(self.model, ConcreteModel), "the model must be an ConcreteModel to use it directly!"
+        
         #SolverFactory("gurobi", solver_io="direct")
         solver = SolverFactory(solver_name) 
-        #solver.solve(model, tee=True) # 'tee=True' prints the gurobi log to the console
-        results = solver.solve(instance)
-        return instance, results
+        results = solver.solve(self.model, tee=True) # 'tee=True' prints the solver log to the console
+
+        return results
     
     def display_solution(self, instance):
         '''
