@@ -1,13 +1,23 @@
 import pandas as pd
 import pyomo.environ as pyo
 
+#Maximum allowed difference between fork dimensions and pallet type dimensions to consider the fork lift suitable for the pallet type.
+FORK_DIMENSIONS_EXCEEDING_THRESHOLD = 0.20 #percentage in fork length/width.
+
 class ParameterDataLoader:
 
-    def __init__(self, mission_batch_df:pd.DataFrame, mission_batch_travel_df:pd.DataFrame, fork_lifts_df:pd.DataFrame, Big_M):
+    def __init__(self, 
+                 mission_batch_df:pd.DataFrame, 
+                 mission_batch_travel_df:pd.DataFrame, 
+                 fork_lifts_df:pd.DataFrame, 
+                 pallet_types_df:pd.DataFrame,
+                 Big_M):
+        
         self.mission_batch_df = mission_batch_df
         self.mission_batch_travel_df = mission_batch_travel_df[['CD_MISSION_1', 'CD_MISSION_2', 'DISTANCE']]
         self.fork_lifts_df = fork_lifts_df
-        self.Big_M = Big_M #can be used to set default high values for unknown/unwanted parameter's values
+        self.pallet_types_df = pallet_types_df
+        self.Big_M = Big_M #can be used to set a default high value for unknown/unwanted parameters (so they will be neglected by the optimization model)
 
         #self.fork_lifts_df.columns.str.strip() #remove leading and trailing spaces from column names
         self.fork_lifts_df['SPEED'].fillna(300, inplace=True)
@@ -32,7 +42,7 @@ class ParameterDataLoader:
         '''
         self.fork_lifts_df[['UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']].fillna(30, inplace=True)
         
-        return {(fork_lift['OID'], mission['CD_MISSION']):  (mission['FROM_Z']/fork_lift['UP_SPEED']) + 
+        return {(int(fork_lift['OID']), int(mission['CD_MISSION'])): (mission['FROM_Z']/fork_lift['UP_SPEED']) + 
                                 (mission['FROM_Z']/fork_lift['DOWN_SPEED_WITH_LOAD']) + 
                                 (mission['DISTANCE']/fork_lift['SPEED_WITH_LOAD']) + 
                                 (mission['TO_Z']/fork_lift['UP_SPEED_WITH_LOAD']) +
@@ -47,10 +57,20 @@ class ParameterDataLoader:
        
         travel_distances = self.mission_batch_travel_df.set_index(['CD_MISSION_1', 'CD_MISSION_2'])['DISTANCE'].to_dict()
 
-        return {k: distance / self.mean_fork_lift_speed for k, distance in travel_distances.items()}
+        return {(int(k[0]), int(k[1])): distance / self.mean_fork_lift_speed for k, distance in travel_distances.items()}
     
     def get_operator_skill_scores(self) -> dict:
-        #
-        return {}
+        '''
+            Returns a dictionary mapping each operator and mission code to a skill score.
+            [(operator_id, mission_code)]: skill_score
+            The skill score is a measure of how the fork lift is adequate to pallet type.
+            If the pallet dimensions excced forks dimension w.r.t. the threshold. Big_M is assigned as operator skill for such pallet type.
+        '''
+
+        return {(int(fork_lift['OID']), int(pallet_type['TP_UDC'])):  self.Big_M 
+                if (pallet_type['WIDTH'] - fork_lift['FORK_WIDTH']) > (fork_lift['FORK_WIDTH'] + (fork_lift['FORK_WIDTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD)) or \
+                (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']) > (fork_lift['FORK_LENGTH'] + (fork_lift['FORK_LENGTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD))
+                else max(1, (pallet_type['WIDTH'] - fork_lift['FORK_WIDTH']) + (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']))
+                for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for pallet_type_idx, pallet_type in self.pallet_types_df.iterrows()}
 
 
