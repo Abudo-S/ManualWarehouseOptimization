@@ -16,23 +16,30 @@ class MultiCriteriaMIPModel:
         #Sets
         model.J = Set()         #orders/missions
         model.I_max = Set()     #maximum pool of operators
+        model.U = Set()        #orders/missions pallet types
         model.J_prime = Set()   #(missions + virtual base node)
 
         #Parameters
-        model.P = Param(model.I_max, model.J)        #processing Time: P[i, j]
+        model.P = Param(model.I_max, model.J)         #processing Time: P[i, j]
         model.T = Param(model.J_prime, model.J_prime) #travel Time: T[j, k] (distance matrix)
-        model.H_fixed = Param()                      #fixed shift capacity (ex. 480 minutes)
-        model.Alpha = Param()                        #makespan weight (for Z)
-        model.Beta = Param()                         #Operator count weight (for sum of y_i)
-        model.M = Param()                            #big-M constant (ex. 10000)
+        model.Q = Param(model.I_max, model.U)         #skill score : Q[i, u]
+        model.O = Param(model.J, model.U)             #order/mission pallet type : O[j, u]
+        model.H_fixed = Param()                       #fixed shift capacity (ex. 480 minutes)
+        model.Alpha = Param()                         #makespan weight (for Z)
+        model.Beta = Param()                          #Operator count weight (for sum of y_i)
+        model.M = Param()                             #big-M constant (ex. 10000)
+
+        self._init_variables_and_constaints(model)
     
     def __init__(self, 
                  missions,
                  operators, 
+                 pallet_types,
                  missions_with_base,
                  processing_times,
                  travel_times,
                  skill_scores,
+                 mission_pallet_types,
                  h_fixed=480,
                  alpha=1.0,
                  beta=1.0, #100
@@ -48,6 +55,7 @@ class MultiCriteriaMIPModel:
         #Sets
         model.J = Set(initialize=missions)                   #orders/missions
         model.I_max = Set(initialize=operators)              #maximum pool of operators
+        model.U = Set(initialize=pallet_types)               #orders/missions pallet types
         model.J_prime = Set(initialize=missions_with_base)   #(missions + virtual base node)
 
         #Parameters
@@ -55,9 +63,15 @@ class MultiCriteriaMIPModel:
         model.M = Param(initialize=M)                                                               #big-M constant (ex. 10000)
         model.P = Param(model.I_max, model.J, initialize=processing_times, default=model.M)         #processing Time: P[i, j]
         model.T = Param(model.J_prime, model.J_prime, initialize=travel_times, default=model.M)     #travel Time: T[j, k] (distance matrix)
+        model.Q = Param(model.I_max, model.U, initialize=skill_scores, default=0)                   #skill score : Q[i, u]
+        model.O = Param(model.J, model.U, initialize=mission_pallet_types, default=1)               #order/mission pallet type : O[j, u]
         model.H_fixed = Param(initialize=h_fixed)                                                   #fixed shift capacity (ex. 480 minutes)
         model.Alpha = Param(initialize=alpha)                                                       #makespan weight (for Z)
         model.Beta = Param(initialize=beta)                                                         #Operator count weight (for sum of y_i)
+
+        self._init_variables_and_constaints(model)
+        
+    def _init_variables_and_constaints(self, model):
 
         #Binary Variables
         #y[i]: 1 if operator i is activated/used
@@ -112,13 +126,19 @@ class MultiCriteriaMIPModel:
             
             return Constraint.Skip
 
-        #mission assignment and flow onstraints
+        #mission assignment and flow constraints
         def assignment_rule(model, j):
             '''
             Mission assignment: each mission j is assigned to exactly one operator i
             '''
             return sum(model.x[i, j] for i in model.I_max) == 1
-
+        
+        def operator_skill_rule(model, i, j):
+            """
+            Mission pallet-type skill: each mission j can only be assigned to operator i if the operator has skill score for the pallet type of the mission.
+            """
+            return sum(model.O[j, u] * model.Q[i, u] for u in model.U) >= model.x[i, j]
+        
         # def flow_conservation_rule(model, i, k):
         #     '''
         #     Flow conservation: Inflow must equal outflow for every order.
@@ -214,6 +234,7 @@ class MultiCriteriaMIPModel:
         model.CompletionTime = Constraint(model.J, rule=completion_time_rule)
 
         model.Assignment = Constraint(model.J, rule=assignment_rule)
+        model.OperatorSkill = Constraint(model.I_max, model.J, rule=operator_skill_rule)
         #model.FlowConservation = Constraint(model.I_max, model.J, rule=flow_conservation_rule)
         model.FlowInflowOutflow = Constraint(model.I_max, model.J, rule=flow_in_out_rule)
         model.FlowAssignment = Constraint(model.I_max, model.J, rule=flow_assignment_rule)
