@@ -1,0 +1,52 @@
+# -----------------------------------------------------------------------------
+# Sets
+# -----------------------------------------------------------------------------
+# J: The list of orders/missions
+set J := Order1 Order2 Order3 ;
+
+# I_max: The pool of available operators
+set I_max := Op1 Op2 ;
+
+# U: The pallet types available
+set U := TypeA TypeB ;
+
+# J_prime: MUST include '0' because the Python code uses 0 for the base
+set J_prime := 0 Order1 Order2 Order3 ;
+
+
+# -----------------------------------------------------------------------------
+# Scalar Parameters
+# -----------------------------------------------------------------------------
+param H_fixed := 480 ;
+param Alpha   := 1.0 ;
+param Beta    := 100.0 ;
+param M       := 10000 ;
+
+
+# -----------------------------------------------------------------------------
+# Indexed Parameters
+# -----------------------------------------------------------------------------
+
+# P[i, j]: Processing Time (Operator x Order)
+param P :         Order1  Order2  Order3 :=
+        Op1       10      15      12
+        Op2       12      14      11 ;
+
+# Q[i, u]: Skill Score (Operator x PalletType)
+param Q :         TypeA   TypeB :=
+        Op1       1       0
+        Op2       1       1 ;
+
+# O[j, u]: Order Pallet Type (Order x PalletType)
+param O :         TypeA   TypeB :=
+        Order1    1       0
+        Order2    0       1
+        Order3    1       0 ;
+
+# T[j, k]: Travel Time Matrix
+# IMPORTANT: Use '0' for the Base Node row and column
+param T :          0      Order1 Order2 Order3 :=
+        0          0      5      10     8
+        Order1     5      0      4      6
+        Order2     10     4      0      3
+        Order3     8      6      3      0 ;

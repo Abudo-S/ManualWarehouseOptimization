@@ -6,6 +6,8 @@ set J := 1 2 3 4 ; # Orders (4 total)
 
 set I_max := A B ; # Maximum Pool of Operators (2 total)
 
+set U := 1 2 ; # Pallet Types (2 total)
+
 # J_prime must include the Base node 0 plus all Orders J
 set J_prime := 0 1 2 3 4 ; 
 
@@ -42,3 +44,17 @@ param T : 0  1  2  3  4 :=
     3  5  7  5  .  9
     4  7  2  4  9  . ; # Return to Base (0) from orders
     # T[j, 0] is the travel time back to Base
+
+# Skill Score Q[i, u]: operator i skill for pallet type u
+
+param Q : 1  2 :=
+      A  20 15
+      B  25 10 ;
+
+# Order Pallet Type O[j, u]: order j associated to pallet type u
+
+param O : 1 2:=
+      1  1 0
+      2  0 1
+      3  1 0
+      4  0 1;
