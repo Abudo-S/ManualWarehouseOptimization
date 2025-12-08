@@ -72,5 +72,15 @@ class ParameterDataLoader:
                 (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']) > (fork_lift['FORK_LENGTH'] + (fork_lift['FORK_LENGTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD))
                 else max(1, (pallet_type['WIDTH'] - fork_lift['FORK_WIDTH']) + (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']))
                 for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for pallet_type_idx, pallet_type in self.pallet_types_df.iterrows()}
+    
+    def get_mission_pallet_types(self) -> dict:
+        '''
+            Returns a dictionary mapping each mission code to its pallet type.
+            {mission_code: pallet_type}
+        '''
+        return {(int(mission['CD_MISSION']), int(pallet_type['TP_UDC'])) : 1 
+                if mission['TP_UDC'] == pallet_type['TP_UDC'] 
+                else 0
+                for mission_idx, mission in self.mission_batch_df.iterrows() for pallet_type_idx, pallet_type in self.pallet_types_df.iterrows()}
 
 
