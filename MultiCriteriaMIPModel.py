@@ -5,7 +5,16 @@ class MultiCriteriaMIPModel:
     Mixed-Integer Programming (MIP) model for minimizing makespan and number of operators used
     in a manual warehouse order picking scenario.
     '''
-    def __init__(self):
+    
+    def __init__(self, *args):
+        if len(args) > 0:
+            self.model_type = 'concrete'
+            self.init_concrete_model(*args)
+        else:
+            self.model_type = 'abstract'
+            self.init_abstract_model()
+    
+    def init_abstract_model(self):
         '''
         Initialize the MIP model with variables, objective function and constraints.
         Values for sets and parameters will be provided later via data files or data portals.
@@ -16,7 +25,7 @@ class MultiCriteriaMIPModel:
         #Sets
         model.J = Set()         #orders/missions
         model.I_max = Set()     #maximum pool of operators
-        model.U = Set()        #orders/missions pallet types
+        model.U = Set()         #orders/missions pallet types
         model.J_prime = Set()   #(missions + virtual base node)
 
         #Parameters
@@ -31,7 +40,7 @@ class MultiCriteriaMIPModel:
 
         self._init_variables_and_constaints(model)
     
-    def __init__(self, 
+    def init_concrete_model(self, 
                  missions,
                  operators, 
                  pallet_types,
@@ -248,44 +257,36 @@ class MultiCriteriaMIPModel:
 
         self.model = model
 
-    def solve(self, data_file:str, data_portal:DataPortal = None, solver_name='glpk'):
+    def solve(self, data_file:str=None, data_portal:DataPortal=None, solver_name='glpk'):
         '''
         data_file: path to the data file for the MIP model parameters.
-        Solve the MIP model with the provided data file.
+        data_portal: the data portal object that contains all parameters data.
+        Solve the MIP model with the provided data_file/data_portal.
         sorver_name: name of the solver to use {glpk, cbc, groubi} (default: 'glpk').
         '''
+        
+        #SolverFactory("gurobi", solver_io="direct")
+        solver = SolverFactory(solver_name) 
 
-        assert isinstance(self.model, AbstractModel), "the model must be an AbstractModel to use data files!"
+        instance = None
+        results = None
+        if data_file is not None or data_portal is not None:
+            assert isinstance(self.model, AbstractModel), "the model must be an AbstractModel to use data files!"
+            instance = self.model.create_instance(data_portal) if data_portal is not None else self.model.create_instance(data_file)
+            results = solver.solve(instance, tee=True) # 'tee=True' prints the solver log to the console
+
+        else:
+            assert isinstance(self.model, ConcreteModel), "the model must be an ConcreteModel to use it directly!"
+            results = solver.solve(self.model, tee=True) # 'tee=True' prints the solver log to the console
         
         #it's possible to use dataPortal to load data directly from a dictionary or other sources
         #data = DataPortal(model=self.model)
         #data.load(name='P', data=P_data) #P_data should have the same dimensions as model.P
         #instance = model.create_instance(data)
 
-        instance = self.model.create_instance(data_portal) if data_portal is not None else self.model.create_instance(data_file)
-
-        #SolverFactory("gurobi", solver_io="direct")
-        solver = SolverFactory(solver_name) 
-        results = solver.solve(self.model, tee=True) # 'tee=True' prints the solver log to the console
-
         return instance, results
     
-    def solve(self, solver_name='glpk'):
-        '''
-        data_portal: the data portal object that contains all parameters data.
-        Solve the MIP model with the provided data_portal.
-        sorver_name: name of the solver to use {glpk, cbc, groubi} (default: 'glpk').
-        '''
-
-        assert isinstance(self.model, ConcreteModel), "the model must be an ConcreteModel to use it directly!"
-        
-        #SolverFactory("gurobi", solver_io="direct")
-        solver = SolverFactory(solver_name) 
-        results = solver.solve(self.model, tee=True) # 'tee=True' prints the solver log to the console
-
-        return results
-    
-    def display_solution(self, instance = None):
+    def display_solution(self, instance=None):
         '''
         Display the solution of the MIP model.
         '''
