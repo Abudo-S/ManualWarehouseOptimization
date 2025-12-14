@@ -145,6 +145,8 @@ class MultiCriteriaMIPModel:
         def operator_skill_rule(model, i, j):
             """
             Mission pallet-type skill: each mission j can only be assigned to operator i if the operator has skill score for the pallet type of the mission.
+            If a mission's pallet type is not compatible with any operator'skill score, the mission remains unassigned! leading to unfeasible solution
+            [Pre-validation: Each mission's pallet type needs to be in at least one operator score].
             """
             return sum(model.O[j, u] * model.Q[i, u] for u in model.U) >= model.x[i, j]
         
@@ -219,11 +221,11 @@ class MultiCriteriaMIPModel:
         #resource capacity and makespan constraints
         def c_last_rule(model, i, j):
             '''
-            C_last (arrival back at base): it requires a Big-M constraint to select the completion time of the last order + return time.
+            C_last (arrival back at base): it requires a Big-M constraint (enabling) to select the completion time of the last order + return time.
             C_last[i] >= C[j] + T[j,0] - M * (1 - z[i,j,0])
             where [0] is the index of the virtual base node.
             '''
-            return model.C_last[i] >= model.C[j] + model.T[j, 0] - model.M * (1 - model.z[i, j, 0])
+            return model.C_last[i] >= model.C[j] + model.T[j, 0] - (2 * model.M) * (1 - model.z[i, j, 0])
 
         def capacity_check_rule(model, i):
             '''
@@ -244,11 +246,11 @@ class MultiCriteriaMIPModel:
 
         model.Assignment = Constraint(model.J, rule=assignment_rule)
         model.OperatorSkill = Constraint(model.I_max, model.J, rule=operator_skill_rule)
-        #model.FlowConservation = Constraint(model.I_max, model.J, rule=flow_conservation_rule)
+        #model.FlowConservation = Constraint(model.I_max, model.J, rule=flow_conservation_rule) #splitted into two separate constraints
         model.FlowInflowOutflow = Constraint(model.I_max, model.J, rule=flow_in_out_rule)
         model.FlowAssignment = Constraint(model.I_max, model.J, rule=flow_assignment_rule)
 
-        #model.BaseFlow = Constraint(model.I_max, rule=base_flow_rule)
+        #model.BaseFlow = Constraint(model.I_max, rule=base_flow_rule) #splitted into two separate constraints
         model.BaseOutflow = Constraint(model.I_max, rule=base_outflow_rule)
         model.BaseInflow = Constraint(model.I_max, rule=base_inflow_rule)
         model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
