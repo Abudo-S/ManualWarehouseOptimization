@@ -3,6 +3,8 @@ import pyomo.environ as pyo
 
 #Maximum allowed difference between fork dimensions and pallet type dimensions to consider the fork lift suitable for the pallet type.
 FORK_DIMENSIONS_EXCEEDING_THRESHOLD = 0.20 #percentage in fork length/width.
+ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION = 10 #minutes
+ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION = 10 #minutes
 
 class ParameterDataLoader:
 
@@ -36,7 +38,7 @@ class ParameterDataLoader:
     def get_mission_processing_times(self) -> dict:
         '''
             Returns a dictionary mapping mission codes to their processing times w.r.t. each operator.
-            [(operator_id, mission_code)]: processing_time
+            [(operator_id, mission_code)]: processing_time + estimated_delay
             The processing time of a mission is defined as the time taken by an operator to complete the mission.
             A mission processing time is calculated as a sum the time of loading, the time to travel with the relative pallet, and the time of unloading.
         '''
@@ -46,31 +48,33 @@ class ParameterDataLoader:
                                 (mission['FROM_Z']/fork_lift['DOWN_SPEED_WITH_LOAD']) + 
                                 (mission['DISTANCE']/fork_lift['SPEED_WITH_LOAD']) + 
                                 (mission['TO_Z']/fork_lift['UP_SPEED_WITH_LOAD']) +
-                                (mission['TO_Z']/fork_lift['DOWN_SPEED']) 
+                                (mission['TO_Z']/fork_lift['DOWN_SPEED']) +
+                                ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION
                                 for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for mission_idx, mission in self.mission_batch_df.iterrows()}
 
     def get_mission_travel_times(self) -> dict:
         '''
             Returns a dictionary mapping each sequence of 2 mission codes to their travel times.
-            [(mission_code_1, mission_code_2)]: travel_time
+            [(mission_code_1, mission_code_2)]: travel_time + estimated_delay
         '''
        
         travel_distances = self.mission_batch_travel_df.set_index(['CD_MISSION_1', 'CD_MISSION_2'])['DISTANCE'].to_dict()
 
-        return {(int(k[0]), int(k[1])): distance / self.mean_fork_lift_speed for k, distance in travel_distances.items()}
+        return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION for k, distance in travel_distances.items()}
     
     def get_operator_skill_scores(self) -> dict:
         '''
             Returns a dictionary mapping each operator and mission code to a skill score.
-            [(operator_id, mission_code)]: skill_score
+            [(operator_id, pallet_type)]: skill_score
             The skill score is a measure of how the fork lift is adequate to pallet type.
-            If the pallet dimensions excced forks dimension w.r.t. the threshold. Big_M is assigned as operator skill for such pallet type.
+            If the pallet dimensions excced forks dimension w.r.t. the threshold, negative Big_M is assigned as operator skill for such pallet type.
+            lower the difference between pallet dimensions and fork dimensions, higher the skill score.
         '''
 
-        return {(int(fork_lift['OID']), int(pallet_type['TP_UDC'])):  self.Big_M 
+        return {(int(fork_lift['OID']), int(pallet_type['TP_UDC'])):  self.Big_M * -1
                 if (pallet_type['WIDTH'] - fork_lift['FORK_WIDTH']) > (fork_lift['FORK_WIDTH'] + (fork_lift['FORK_WIDTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD)) or \
                 (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']) > (fork_lift['FORK_LENGTH'] + (fork_lift['FORK_LENGTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD))
-                else max(1, (pallet_type['WIDTH'] - fork_lift['FORK_WIDTH']) + (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']))
+                else self.Big_M - (abs((pallet_type['WIDTH'] - fork_lift['FORK_WIDTH'])) + abs((pallet_type['LENGTH'] - fork_lift['FORK_LENGTH'])))
                 for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for pallet_type_idx, pallet_type in self.pallet_types_df.iterrows()}
     
     def get_mission_pallet_types(self) -> dict:
