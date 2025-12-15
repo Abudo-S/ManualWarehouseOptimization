@@ -3,8 +3,8 @@ import pyomo.environ as pyo
 
 #Maximum allowed difference between fork dimensions and pallet type dimensions to consider the fork lift suitable for the pallet type.
 FORK_DIMENSIONS_EXCEEDING_THRESHOLD = 0.20 #percentage in fork length/width.
-ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION = 10 #minutes
-ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION = 10 #minutes
+ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION = 5 #minutes
+ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION = 5 #minutes
 
 class ParameterDataLoader:
 
@@ -57,10 +57,12 @@ class ParameterDataLoader:
             Returns a dictionary mapping each sequence of 2 mission codes to their travel times.
             [(mission_code_1, mission_code_2)]: travel_time + estimated_delay
         '''
-       
+        cd_missions = self.mission_batch_df['CD_MISSION'].tolist()
         travel_distances = self.mission_batch_travel_df.set_index(['CD_MISSION_1', 'CD_MISSION_2'])['DISTANCE'].to_dict()
 
-        return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION for k, distance in travel_distances.items()}
+        return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION 
+                for k, distance in travel_distances.items()
+                if k[0] in cd_missions and k[1] in cd_missions}
     
     def get_operator_skill_scores(self) -> dict:
         '''
@@ -69,12 +71,13 @@ class ParameterDataLoader:
             The skill score is a measure of how the fork lift is adequate to pallet type.
             If the pallet dimensions excced forks dimension w.r.t. the threshold, negative Big_M is assigned as operator skill for such pallet type.
             lower the difference between pallet dimensions and fork dimensions, higher the skill score.
+            self.Big_M is used to normalize the skill score between 0 and 1.
         '''
 
-        return {(int(fork_lift['OID']), int(pallet_type['TP_UDC'])):  self.Big_M * -1
+        return {(int(fork_lift['OID']), int(pallet_type['TP_UDC'])):  (self.Big_M * -1) / self.Big_M
                 if (pallet_type['WIDTH'] - fork_lift['FORK_WIDTH']) > (fork_lift['FORK_WIDTH'] + (fork_lift['FORK_WIDTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD)) or \
                 (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']) > (fork_lift['FORK_LENGTH'] + (fork_lift['FORK_LENGTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD))
-                else self.Big_M - (abs((pallet_type['WIDTH'] - fork_lift['FORK_WIDTH'])) + abs((pallet_type['LENGTH'] - fork_lift['FORK_LENGTH'])))
+                else (self.Big_M - (abs((pallet_type['WIDTH'] - fork_lift['FORK_WIDTH'])) + abs((pallet_type['LENGTH'] - fork_lift['FORK_LENGTH'])))) / self.Big_M
                 for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for pallet_type_idx, pallet_type in self.pallet_types_df.iterrows()}
     
     def get_mission_pallet_types(self) -> dict:
