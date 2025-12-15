@@ -218,6 +218,23 @@ class MultiCriteriaMIPModel:
             
             return inflow_to_base == model.y[i]
 
+        def symmetry_break_rule(model, i):
+            '''
+            Symmetry breaking: to reduce symmetric/interchangable solutions, we need to
+            enforce an ordering on operator activation.
+            y[i] <= y[i-1] for all i in I_max, i != first operator
+            '''
+
+            i_list = list(model.I_max)
+            if i == i_list[0]: 
+                return Constraint.Skip
+            
+            current_index = i_list.index(i)
+            previous_operator = i_list[current_index - 1]
+            
+            #operator i can only be active if operator i-1 is active.
+            return model.y[i] <= model.y[previous_operator] 
+
         #resource capacity and makespan constraints
         def c_last_rule(model, i, j):
             '''
@@ -225,7 +242,7 @@ class MultiCriteriaMIPModel:
             C_last[i] >= C[j] + T[j,0] - M * (1 - z[i,j,0])
             where [0] is the index of the virtual base node.
             '''
-            return model.C_last[i] >= model.C[j] + model.T[j, 0] - (2 * model.M) * (1 - model.z[i, j, 0])
+            return model.C_last[i] >= model.C[j] + model.T[j, 0] - (1.1 * model.M) * (1 - model.z[i, j, 0])
 
         def capacity_check_rule(model, i):
             '''
@@ -240,35 +257,149 @@ class MultiCriteriaMIPModel:
             return model.Z >= model.C_last[i]
 
         #assign objective and constraints to the model
+        #objective function
         model.Objective = Objective(rule=objective_rule, sense=minimize)
+
+        #scheduling and time constraints
         model.Sequencing = Constraint(model.I_max, model.J, model.J, rule=sequencing_rule)
         model.CompletionTime = Constraint(model.J, rule=completion_time_rule)
 
+        #mission assignment and flow constraints
         model.Assignment = Constraint(model.J, rule=assignment_rule)
         model.OperatorSkill = Constraint(model.I_max, model.J, rule=operator_skill_rule)
         #model.FlowConservation = Constraint(model.I_max, model.J, rule=flow_conservation_rule) #splitted into two separate constraints
         model.FlowInflowOutflow = Constraint(model.I_max, model.J, rule=flow_in_out_rule)
         model.FlowAssignment = Constraint(model.I_max, model.J, rule=flow_assignment_rule)
-
         #model.BaseFlow = Constraint(model.I_max, rule=base_flow_rule) #splitted into two separate constraints
         model.BaseOutflow = Constraint(model.I_max, rule=base_outflow_rule)
         model.BaseInflow = Constraint(model.I_max, rule=base_inflow_rule)
+        model.SymmetryBreak = Constraint(model.I_max, rule=symmetry_break_rule)
+        
+        #resource capacity and makespan constraints
         model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
         model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
         model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
 
         self.model = model
 
-    def solve(self, data_file:str=None, data_portal:DataPortal=None, solver_name='glpk'):
+    def solve(self, 
+              data_file:str=None, 
+              data_portal:DataPortal=None, 
+              time_limit=None, 
+              mip_gap=None, 
+              solver_name='glpk'):
         '''
         data_file: path to the data file for the MIP model parameters.
         data_portal: the data portal object that contains all parameters data.
         Solve the MIP model with the provided data_file/data_portal.
-        sorver_name: name of the solver to use {glpk, cbc, groubi} (default: 'glpk').
+        sorver_name: name of the solver to use {glpk, cbc, groubi, cplex} (default: 'glpk').
+        time_limit: time limit for the glpk solver in seconds (default: None).
+        mip_gap: MIP gap tolerance percent for the solver (default: None) [ex. 0.05 #stop if within 5% of optimal].
         '''
-        
+        # op1 = list(self.model.I_max)[0]  # First operator
+        # base_node = 0               # Virtual base node index
+
+        # # 3a. Initialize Binary Variables (x, y, z)
+        # # Variables MUST use .value
+        # for i in self.model.I_max:
+        #     self.model.y[i].value = 0
+        #     for j in self.model.J:
+        #         self.model.x[i, j].value = 0
+        #         for k in self.model.J_prime:
+        #             self.model.z[i, j, k].value = 0
+        #             if j != k:
+        #                 self.model.z[i, k, j].value = 0
+
+        # # Force the first operator to be active (y=1)
+        # self.model.y[op1].value = 1
+
+        # # Assign all missions to the first operator (x=1)
+        # for j in self.model.J:
+        #     self.model.x[op1, j].value = 1
+
+        # # 3b. Calculate Sequential Times and Flow (S, C, z)
+        # current_time = 0.0
+        # prev_node = base_node
+        # missions_list = list(self.model.J)
+
+        # print(f"--- Warm Start Schedule (Operator: {op1}) ---")
+        # print(f"Starting Time: {current_time}")
+
+        # for j in missions_list:
+        #     # Set sequencing flow z[i, prev_node, j]
+        #     self.model.z[op1, prev_node, j].value = 1
+            
+        #     # Access Parameters (T and P) WITHOUT .value
+        #     travel_time = self.model.T[prev_node, j]         # Corrected: Removed .value
+        #     processing_time = self.model.P[op1, j]           # Corrected: Removed .value
+            
+        #     start_time = current_time + travel_time
+        #     completion_time = start_time + processing_time
+            
+        #     # Set Variables (S and C) WITH .value
+        #     self.model.S[j].value = start_time
+        #     self.model.C[j].value = completion_time
+            
+        #     #print(f"Mission {j}: Travel={travel_time:.1f}, Start={start_time:.1f}, Complete={completion_time:.1f}")
+
+        #     current_time = completion_time
+        #     prev_node = j
+
+        # # 3c. Final Return Trip and Makespan (C_last, Z)
+
+        # # Set the z variable for the return trip: z[i, last_mission, base_node]
+        # self.model.z[op1, prev_node, base_node].value = 1
+
+        # # Access Parameter T WITHOUT .value
+        # final_travel = self.model.T[prev_node, base_node]    # Corrected: Removed .value
+        # final_c_last = current_time + final_travel
+
+        # # Set Variables (C_last and Z) WITH .value
+        # self.model.C_last[op1].value = final_c_last
+        # # Ensure other C_last variables are set to 0 to avoid errors in Makespan constraint
+        # for i in self.model.I_max:
+        #     if i != op1:
+        #         self.model.C_last[i].value = 0.0 
+
+        # self.model.Z.value = final_c_last
+
+        # #print(f"Return trip: Travel={final_travel:.1f}, Final C_last={final_c_last:.1f}")
+        # #print(f"Warm Start Max Makespan (Z): {self.model.Z.value:.1f}")
+
+        # # --- 4. Load the Warm Start and Solve ---
+        # # CRUCIAL STEP: Load the calculated values into the Pyomo instance
+        # self.model.solutions.load_from(results=None)
+
         #SolverFactory("gurobi", solver_io="direct")
         solver = SolverFactory(solver_name) 
+
+        #add solver options based on the selected solver
+        if solver_name == "glpk":
+            if time_limit is not None:
+                solver.options['tmlim'] = time_limit  
+            if mip_gap is not None: 
+                solver.options['mipgap'] = mip_gap 
+            # solver.options['tolpiv'] = 1e-7      # Bounding tolerance
+            # solver.options['tolint'] = 1e-7      # Integer tolerance (must be small)
+            # solver.options['scale'] = 'on'       # Force internal scaling
+
+        elif solver_name == "cbc":
+            if time_limit is not None:
+                solver.options['sec'] = time_limit  
+            if mip_gap is not None:
+                solver.options['ratio'] = mip_gap
+        elif solver_name == "gurobi":
+            solver.options['NumericFocus'] = 'yes'
+            if time_limit is not None:
+                solver.options['TimeLimit'] = time_limit  
+            if mip_gap is not None:
+                solver.options['MIPGap'] = mip_gap
+        elif solver_name == "cplex":
+            #solver.options['emphasis numerical'] = 3
+            if time_limit is not None:
+                solver.options['timelimit'] = time_limit  
+            if mip_gap is not None:
+                solver.options['mipgap'] = mip_gap
 
         instance = None
         results = None
@@ -285,6 +416,15 @@ class MultiCriteriaMIPModel:
         #data = DataPortal(model=self.model)
         #data.load(name='P', data=P_data) #P_data should have the same dimensions as model.P
         #instance = model.create_instance(data)
+
+        # if results.solver.termination_condition == TerminationCondition.optimal:
+        #     self.model.load(results)
+        #     # Proceed with post-processing (e.g., printing objective, variables)
+        #     print("Optimal solution found.")
+        # else:
+        #     # Print the specific condition instead of crashing
+        #     print(f"Solver terminated with non-optimal condition: {results.solver.termination_condition}")
+        #     print(f"Solver status: {results.solver.status}")
 
         return instance, results
     
