@@ -10,12 +10,14 @@ class ParameterDataLoader:
 
     def __init__(self, 
                  mission_batch_df:pd.DataFrame, 
+                 mission_batch_with_base_df:pd.DataFrame, 
                  mission_batch_travel_df:pd.DataFrame, 
                  fork_lifts_df:pd.DataFrame, 
                  pallet_types_df:pd.DataFrame,
                  Big_M):
         
         self.mission_batch_df = mission_batch_df
+        self.mission_batch_with_base_df = mission_batch_with_base_df
         self.mission_batch_travel_df = mission_batch_travel_df[['CD_MISSION_1', 'CD_MISSION_2', 'DISTANCE']]
         self.fork_lifts_df = fork_lifts_df
         self.pallet_types_df = pallet_types_df
@@ -57,7 +59,7 @@ class ParameterDataLoader:
             Returns a dictionary mapping each sequence of 2 mission codes to their travel times.
             [(mission_code_1, mission_code_2)]: travel_time + estimated_delay
         '''
-        cd_missions = self.mission_batch_df['CD_MISSION'].tolist()
+        cd_missions = self.mission_batch_with_base_df['CD_MISSION'].tolist()
         travel_distances = self.mission_batch_travel_df.set_index(['CD_MISSION_1', 'CD_MISSION_2'])['DISTANCE'].to_dict()
 
         return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION 
@@ -69,15 +71,14 @@ class ParameterDataLoader:
             Returns a dictionary mapping each operator and mission code to a skill score.
             [(operator_id, pallet_type)]: skill_score
             The skill score is a measure of how the fork lift is adequate to pallet type.
-            If the pallet dimensions excced forks dimension w.r.t. the threshold, negative Big_M is assigned as operator skill for such pallet type.
+            If the pallet dimensions excced forks dimension w.r.t. the threshold, n0 is assigned as operator skill for such pallet type.
             lower the difference between pallet dimensions and fork dimensions, higher the skill score.
-            self.Big_M is used to normalize the skill score between 0 and 1.
         '''
 
-        return {(int(fork_lift['OID']), int(pallet_type['TP_UDC'])):  (self.Big_M * -1) / self.Big_M
+        return {(int(fork_lift['OID']), int(pallet_type['TP_UDC'])):  0
                 if (pallet_type['WIDTH'] - fork_lift['FORK_WIDTH']) > (fork_lift['FORK_WIDTH'] + (fork_lift['FORK_WIDTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD)) or \
                 (pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']) > (fork_lift['FORK_LENGTH'] + (fork_lift['FORK_LENGTH'] * FORK_DIMENSIONS_EXCEEDING_THRESHOLD))
-                else (self.Big_M - (abs((pallet_type['WIDTH'] - fork_lift['FORK_WIDTH'])) + abs((pallet_type['LENGTH'] - fork_lift['FORK_LENGTH'])))) / self.Big_M
+                else (100 - (abs((pallet_type['WIDTH'] - fork_lift['FORK_WIDTH'])) + abs((pallet_type['LENGTH'] - fork_lift['FORK_LENGTH']))))
                 for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for pallet_type_idx, pallet_type in self.pallet_types_df.iterrows()}
     
     def get_mission_pallet_types(self) -> dict:
