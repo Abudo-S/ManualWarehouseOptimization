@@ -37,6 +37,7 @@ class MultiCriteriaMIPModel:
         model.Alpha = Param()                         #makespan weight (for Z)
         model.Beta = Param()                          #Operator count weight (for sum of y_i)
         model.M = Param()                             #big-M constant (ex. 10000)
+        model.M_Time = Param()                        #big-M constant for time calculations (ex. 10000)
 
         self._init_variables_and_constaints(model)
     
@@ -52,6 +53,7 @@ class MultiCriteriaMIPModel:
                  h_fixed=480,
                  alpha=1.0,
                  beta=1.0, #100
+                 M_Time=10000,
                  M=10000
                 ):
         '''
@@ -70,8 +72,10 @@ class MultiCriteriaMIPModel:
         #Parameters
         #in case of missing data, use big-M as default value (so the corresponding assignment/sequencing will be avoided in optimal solution)
         model.M = Param(initialize=M)                                                               #big-M constant (ex. 10000)
-        model.P = Param(model.I_max, model.J, initialize=processing_times, default=model.M)         #processing Time: P[i, j]
-        model.T = Param(model.J_prime, model.J_prime, initialize=travel_times, default=model.M)     #travel Time: T[j, k] (distance matrix)
+        model.M_Time = Param(initialize=M_Time)                                                     #big-M constant for time calculations (ex. 10000)
+        model.P = Param(model.I_max, model.J, initialize=processing_times, default=1)               #processing Time: P[i, j]
+        #Note that assigning big-M as default might create infeasible solution if no valid travel time exists for all mission pairs or base-mission pairs
+        model.T = Param(model.J_prime, model.J_prime, initialize=travel_times, default=model.M)      #travel Time: T[j, k] (distance matrix)
         model.Q = Param(model.I_max, model.U, initialize=skill_scores, default=0)                   #skill score : Q[i, u]
         model.O = Param(model.J, model.U, initialize=mission_pallet_types, default=1)               #order/mission pallet type : O[j, u]
         model.H_fixed = Param(initialize=h_fixed)                                                   #fixed shift capacity (ex. 480 minutes)
@@ -91,7 +95,7 @@ class MultiCriteriaMIPModel:
 
         #x[i, j]: 1 if order j is assigned to operator i
         model.x = Var(model.I_max, model.J, domain=Binary) #order assignment
-
+        
         #Continuous Variables
         #S[j]: start time of order j
         model.S = Var(model.J, bounds=(0, None))
@@ -99,11 +103,14 @@ class MultiCriteriaMIPModel:
         #C[j]: completion time of order j
         model.C = Var(model.J, bounds=(0, None))
 
-        #S_first[i]: start time of operator i's first task "departure time from base" (for capacity check)
+        #S_first[i]: start time of operator i's first task "departure time from base/mission" (for capacity check)
         model.S_first = Var(model.I_max, bounds=(0, None))
 
         #C_last[i]: completion time including return to Base (for capacity check)
         model.C_last = Var(model.I_max, bounds=(0, None))
+
+        # u[i, j]: MTZ variable, sequence position (rank) of mission j in operator i's route
+        model.u = Var(model.I_max, model.J, bounds=(0, len(model.J)))
 
         #Z: overall makespan (max completion time for sequence of missions)
         model.Z = Var(bounds=(0, None))
@@ -234,7 +241,34 @@ class MultiCriteriaMIPModel:
             
             #operator i can only be active if operator i-1 is active.
             return model.y[i] <= model.y[previous_operator] 
+        
+        #MTZ constraints
+        def mtz_ordering_rule(model, i, j, k):
+            '''
+            MTZ Ordering: eliminates sub-tours not involving the base.
+            u[i, k] >= u[i, j] + 1 - M * (1 - z[i, j, k]) for all i in I_max, j in J, k in J, j != k
+            '''
+            if j != k and j in model.J and k in model.J:
+                return model.u[i, k] >= model.u[i, j] + 1 - model.M * (1 - model.z[i, j, k])
+            
+            return Constraint.Skip
 
+        def mtz_assignment_rule(model, i, j):
+            '''
+            MTZ Assignment: ensure u[i,j] is 0 if mission j is not assigned to operator i.
+            u[i, j] <= |J| * x[i, j] 
+            it forces u[i,j] to 0 when x[i,j] = 0.
+            '''
+            return model.u[i, j] <= len(model.J) * model.x[i, j]
+
+        def mtz_base_start_rule(model, i, j):
+            '''
+            MTZ Base Start: ensures the rank of the first mission is at least 1.
+            u[i, j] >= 1 * z[i, 0, j]
+            if z[i, 0, j] = 1 (operator i goes from base to mission j), then u[i, j] >= 1.
+            '''
+            return model.u[i, j] >= model.z[i, 0, j]
+        
         #resource capacity and makespan constraints
         def c_last_rule(model, i, j):
             '''
@@ -242,19 +276,32 @@ class MultiCriteriaMIPModel:
             C_last[i] >= C[j] + T[j,0] - M * (1 - z[i,j,0])
             where [0] is the index of the virtual base node.
             '''
-            return model.C_last[i] >= model.C[j] + model.T[j, 0] - (1.1 * model.M) * (1 - model.z[i, j, 0])
+            return model.C_last[i] >= model.C[j] + model.T[j, 0] -  model.M_Time * (1 - model.z[i, j, 0])
 
         def capacity_check_rule(model, i):
             '''
             Capacity check: ensure that the total time (based on last order) for each operator i does not exceed fixed shift capacity if activated.
             '''
             return model.C_last[i] <= model.H_fixed * model.y[i]
+        
+        def start_capacity_check_rule(model, i):
+            '''
+            Capacity check: ensure that the total time (based on start time) for each operator i does not exceed fixed shift capacity if activated.
+            '''
+            return model.S_first[i] <= model.H_fixed * model.y[i]
 
         def makespan_rule(model, i):
             '''
             Makespan definition: ensure that the makespan Z is at least the completion time including return to base for each operator i.
             '''
-            return model.Z >= model.C_last[i]
+            return model.Z >= model.C_last[i] #original definition including return to base
+        
+        
+        def makespan_rule_no_return(model, j):
+            '''
+            Makespan definition: ensure that the makespan Z is at least the completion time.
+            '''
+            return model.Z >= model.C[j] #substitutes definition ignoring return to base time
 
         #assign objective and constraints to the model
         #objective function
@@ -275,10 +322,17 @@ class MultiCriteriaMIPModel:
         model.BaseInflow = Constraint(model.I_max, rule=base_inflow_rule)
         model.SymmetryBreak = Constraint(model.I_max, rule=symmetry_break_rule)
         
+        #MTZ constraints
+        model.MTZOrdering = Constraint(model.I_max, model.J, model.J, rule=mtz_ordering_rule)
+        model.MTZAssignment = Constraint(model.I_max, model.J, rule=mtz_assignment_rule)
+        model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
+
         #resource capacity and makespan constraints
-        model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
-        model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
-        model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
+        #model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
+        #model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
+        model.StartCapacityCheck = Constraint(model.I_max, rule=start_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
+        #model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
+        model.MakespanDefinition = Constraint(model.J, rule=makespan_rule_no_return) #substitutes MakespanDefinition but ignores return to base time
 
         self.model = model
 
@@ -296,79 +350,6 @@ class MultiCriteriaMIPModel:
         time_limit: time limit for the glpk solver in seconds (default: None).
         mip_gap: MIP gap tolerance percent for the solver (default: None) [ex. 0.05 #stop if within 5% of optimal].
         '''
-        # op1 = list(self.model.I_max)[0]  # First operator
-        # base_node = 0               # Virtual base node index
-
-        # # 3a. Initialize Binary Variables (x, y, z)
-        # # Variables MUST use .value
-        # for i in self.model.I_max:
-        #     self.model.y[i].value = 0
-        #     for j in self.model.J:
-        #         self.model.x[i, j].value = 0
-        #         for k in self.model.J_prime:
-        #             self.model.z[i, j, k].value = 0
-        #             if j != k:
-        #                 self.model.z[i, k, j].value = 0
-
-        # # Force the first operator to be active (y=1)
-        # self.model.y[op1].value = 1
-
-        # # Assign all missions to the first operator (x=1)
-        # for j in self.model.J:
-        #     self.model.x[op1, j].value = 1
-
-        # # 3b. Calculate Sequential Times and Flow (S, C, z)
-        # current_time = 0.0
-        # prev_node = base_node
-        # missions_list = list(self.model.J)
-
-        # print(f"--- Warm Start Schedule (Operator: {op1}) ---")
-        # print(f"Starting Time: {current_time}")
-
-        # for j in missions_list:
-        #     # Set sequencing flow z[i, prev_node, j]
-        #     self.model.z[op1, prev_node, j].value = 1
-            
-        #     # Access Parameters (T and P) WITHOUT .value
-        #     travel_time = self.model.T[prev_node, j]         # Corrected: Removed .value
-        #     processing_time = self.model.P[op1, j]           # Corrected: Removed .value
-            
-        #     start_time = current_time + travel_time
-        #     completion_time = start_time + processing_time
-            
-        #     # Set Variables (S and C) WITH .value
-        #     self.model.S[j].value = start_time
-        #     self.model.C[j].value = completion_time
-            
-        #     #print(f"Mission {j}: Travel={travel_time:.1f}, Start={start_time:.1f}, Complete={completion_time:.1f}")
-
-        #     current_time = completion_time
-        #     prev_node = j
-
-        # # 3c. Final Return Trip and Makespan (C_last, Z)
-
-        # # Set the z variable for the return trip: z[i, last_mission, base_node]
-        # self.model.z[op1, prev_node, base_node].value = 1
-
-        # # Access Parameter T WITHOUT .value
-        # final_travel = self.model.T[prev_node, base_node]    # Corrected: Removed .value
-        # final_c_last = current_time + final_travel
-
-        # # Set Variables (C_last and Z) WITH .value
-        # self.model.C_last[op1].value = final_c_last
-        # # Ensure other C_last variables are set to 0 to avoid errors in Makespan constraint
-        # for i in self.model.I_max:
-        #     if i != op1:
-        #         self.model.C_last[i].value = 0.0 
-
-        # self.model.Z.value = final_c_last
-
-        # #print(f"Return trip: Travel={final_travel:.1f}, Final C_last={final_c_last:.1f}")
-        # #print(f"Warm Start Max Makespan (Z): {self.model.Z.value:.1f}")
-
-        # # --- 4. Load the Warm Start and Solve ---
-        # # CRUCIAL STEP: Load the calculated values into the Pyomo instance
-        # self.model.solutions.load_from(results=None)
 
         #SolverFactory("gurobi", solver_io="direct")
         solver = SolverFactory(solver_name) 
