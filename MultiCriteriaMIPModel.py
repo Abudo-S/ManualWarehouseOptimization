@@ -1,6 +1,6 @@
 from pyomo.environ import *
 from pyomo.solvers.plugins.solvers.cplex_persistent import CPLEXPersistent
-import cplex_env
+from pyomo.gdp import Disjunction
 import cplex
 
 class MultiCriteriaMIPModel:
@@ -68,6 +68,7 @@ class MultiCriteriaMIPModel:
         #MIP Definition
         #Sets
         model.J = Set(initialize=missions)                   #orders/missions
+        #model.I_max = Set(initialize=sorted(operators))     #maximum pool of operators
         model.I_max = Set(initialize=operators)              #maximum pool of operators
         model.U = Set(initialize=pallet_types)               #orders/missions pallet types
         model.J_prime = Set(initialize=missions_with_base)   #(missions + virtual base node)
@@ -101,16 +102,16 @@ class MultiCriteriaMIPModel:
         
         #Continuous Variables
         #S[j]: start time of order j
-        model.S = Var(model.J, bounds=(0, None))
+        model.S = Var(model.J, bounds=(0, model.H_fixed))
 
         #C[j]: completion time of order j
-        model.C = Var(model.J, bounds=(0, None))
+        model.C = Var(model.J, bounds=(0, model.H_fixed))
 
         #S_first[i]: start time of operator i's first task "departure time from base/mission" (for capacity check)
-        model.S_first = Var(model.I_max, bounds=(0, None))
+        model.S_first = Var(model.I_max, bounds=(0, model.H_fixed))
 
         #C_last[i]: completion time including return to Base (for capacity check)
-        model.C_last = Var(model.I_max, bounds=(0, None))
+        model.C_last = Var(model.I_max, bounds=(0, model.H_fixed))
 
         # u[i, j]: MTZ variable, sequence position (rank) of mission j in operator i's route
         model.u = Var(model.I_max, model.J, bounds=(0, len(model.J)))
@@ -141,9 +142,17 @@ class MultiCriteriaMIPModel:
             S[k] >= C[j] + T[j,k] - M * (1 - z[i,j,k])  for all i in I_max, j in J, k in J, j != k
             '''
             if j != k and j in model.J and k in model.J:
-                return model.S[k] >= model.C[j] + model.T[j, k] - model.M * (1 - model.z[i, j, k])
+                return model.S[k] >= model.C[j] + model.T[j, k] - model.M_Time * (1 - model.z[i, j, k])
             
             return Constraint.Skip
+
+        def sequencing_disjunction_rule(model, i, j, k):
+            if j == k: 
+                return Disjunction.Skip
+            return [
+                [model.z[i,j,k] == 1, model.S[k] >= model.C[j] + model.T[j,k]],
+                [model.z[i,j,k] == 0]
+            ]
 
         #mission assignment and flow constraints
         def assignment_rule(model, j):
@@ -241,6 +250,7 @@ class MultiCriteriaMIPModel:
             y[i] <= y[i-1] for all i in I_max, i != first operator
             '''
 
+            #i_list = sorted(list(model.I_max))
             i_list = list(model.I_max)
             if i == i_list[0]: 
                 return Constraint.Skip
@@ -251,8 +261,8 @@ class MultiCriteriaMIPModel:
             #operator i can only be active if operator i-1 is active.
             return model.y[i] <= model.y[previous_operator] 
         
-        #MTZ constraints
-        def mtz_ordering_rule(model, i, j, k):
+        #MTZ constraints (prevent sub-tours) 
+        def mtz_ordering_M_rule(model, i, j, k):
             '''
             MTZ Ordering: eliminates sub-tours not involving the base.
             u[i, k] >= u[i, j] + 1 - M * (1 - z[i, j, k]) for all i in I_max, j in J, k in J, j != k
@@ -262,6 +272,17 @@ class MultiCriteriaMIPModel:
             
             return Constraint.Skip
 
+        def mtz_ordering_rule(model, i, j, k):
+            """
+            MTZ Ordering (alternative form):
+            u[i,j] - u[i,k] + |J| * z[i,j,k] <= |J| - 1  for all i, j != k
+            """
+            if j == k or j not in model.J or k not in model.J:
+                return Constraint.Skip
+
+            nJ = len(model.J)
+            return model.u[i, j] - model.u[i, k] + nJ * model.z[i, j, k] <= nJ - 1
+        
         def mtz_assignment_rule(model, i, j):
             '''
             MTZ Assignment: ensure u[i,j] is 0 if mission j is not assigned to operator i.
@@ -285,7 +306,7 @@ class MultiCriteriaMIPModel:
             C_last[i] >= C[j] + T[j,0] - M * (1 - z[i,j,0])
             where [0] is the index of the virtual base node.
             '''
-            return model.C_last[i] >= model.C[j] + model.T[j, 0] -  model.M_Time * (1 - model.z[i, j, 0])
+            return model.C_last[i] >= model.C[j] + model.T[j, 0] -  model.H_fixed * (1 - model.z[i, j, 0])
 
         def capacity_check_rule(model, i):
             '''
@@ -317,7 +338,8 @@ class MultiCriteriaMIPModel:
         model.Objective = Objective(rule=objective_rule, sense=minimize)
 
         #scheduling and time constraints
-        model.Sequencing = Constraint(model.I_max, model.J, model.J, rule=sequencing_rule)
+        #model.Sequencing = Constraint(model.I_max, model.J, model.J, rule=sequencing_rule)
+        model.indicator_con = Disjunction(model.I_max, model.J, model.J, rule=sequencing_disjunction_rule)
         model.CompletionTime = Constraint(model.J, rule=completion_time_rule)
 
         #mission assignment and flow constraints
@@ -333,9 +355,9 @@ class MultiCriteriaMIPModel:
         model.SymmetryBreak = Constraint(model.I_max, rule=symmetry_break_rule)
         
         # #MTZ constraints
-        # model.MTZOrdering = Constraint(model.I_max, model.J, model.J, rule=mtz_ordering_rule)
-        # model.MTZAssignment = Constraint(model.I_max, model.J, rule=mtz_assignment_rule)
-        # model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
+        model.MTZOrdering = Constraint(model.I_max, model.J, model.J, rule=mtz_ordering_rule)
+        model.MTZAssignment = Constraint(model.I_max, model.J, rule=mtz_assignment_rule)
+        model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
 
         #resource capacity and makespan constraints
         #model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
@@ -345,6 +367,7 @@ class MultiCriteriaMIPModel:
         model.MakespanDefinition = Constraint(model.J, rule=makespan_rule_no_return) #substitutes MakespanDefinition but ignores return to base time
 
         self.model = model
+        TransformationFactory('gdp.bigm').apply_to(self.model) #apply the big-M reformulation for disjunctions
 
     def solve(self, 
               data_file:str=None, 
