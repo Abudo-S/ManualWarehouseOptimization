@@ -1,4 +1,7 @@
 from pyomo.environ import *
+from pyomo.solvers.plugins.solvers.cplex_persistent import CPLEXPersistent
+import cplex_env
+import cplex
 
 class MultiCriteriaMIPModel:
     '''
@@ -75,7 +78,7 @@ class MultiCriteriaMIPModel:
         model.M_Time = Param(initialize=M_Time)                                                     #big-M constant for time calculations (ex. 10000)
         model.P = Param(model.I_max, model.J, initialize=processing_times, default=1)               #processing Time: P[i, j]
         #Note that assigning big-M as default might create infeasible solution if no valid travel time exists for all mission pairs or base-mission pairs
-        model.T = Param(model.J_prime, model.J_prime, initialize=travel_times, default=model.M)      #travel Time: T[j, k] (distance matrix)
+        model.T = Param(model.J_prime, model.J_prime, initialize=travel_times, default=model.M)     #travel Time: T[j, k] (distance matrix)
         model.Q = Param(model.I_max, model.U, initialize=skill_scores, default=0)                   #skill score : Q[i, u]
         model.O = Param(model.J, model.U, initialize=mission_pallet_types, default=1)               #order/mission pallet type : O[j, u]
         model.H_fixed = Param(initialize=h_fixed)                                                   #fixed shift capacity (ex. 480 minutes)
@@ -148,6 +151,12 @@ class MultiCriteriaMIPModel:
             Mission assignment: each mission j is assigned to exactly one operator i
             '''
             return sum(model.x[i, j] for i in model.I_max) == 1
+        
+        def activation_link_rule(model, i, j):
+            '''
+            Activation link: an operator i can only be assigned to mission j if the operator is activated.
+            '''
+            return model.x[i, j] <= model.y[i]
         
         def operator_skill_rule(model, i, j):
             """
@@ -284,11 +293,11 @@ class MultiCriteriaMIPModel:
             '''
             return model.C_last[i] <= model.H_fixed * model.y[i]
         
-        def start_capacity_check_rule(model, i):
+        def completion_capacity_check_rule(model, j):
             '''
-            Capacity check: ensure that the total time (based on start time) for each operator i does not exceed fixed shift capacity if activated.
+            Capacity check: ensure that the total time (based on completion time) for each operator i does not exceed fixed shift capacity if activated.
             '''
-            return model.S_first[i] <= model.H_fixed * model.y[i]
+            return model.C[j] <= model.H_fixed
 
         def makespan_rule(model, i):
             '''
@@ -313,6 +322,7 @@ class MultiCriteriaMIPModel:
 
         #mission assignment and flow constraints
         model.Assignment = Constraint(model.J, rule=assignment_rule)
+        model.ActivationLink = Constraint(model.I_max, model.J, rule=activation_link_rule)
         model.OperatorSkill = Constraint(model.I_max, model.J, rule=operator_skill_rule)
         #model.FlowConservation = Constraint(model.I_max, model.J, rule=flow_conservation_rule) #splitted into two separate constraints
         model.FlowInflowOutflow = Constraint(model.I_max, model.J, rule=flow_in_out_rule)
@@ -322,15 +332,15 @@ class MultiCriteriaMIPModel:
         model.BaseInflow = Constraint(model.I_max, rule=base_inflow_rule)
         model.SymmetryBreak = Constraint(model.I_max, rule=symmetry_break_rule)
         
-        #MTZ constraints
-        model.MTZOrdering = Constraint(model.I_max, model.J, model.J, rule=mtz_ordering_rule)
-        model.MTZAssignment = Constraint(model.I_max, model.J, rule=mtz_assignment_rule)
-        model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
+        # #MTZ constraints
+        # model.MTZOrdering = Constraint(model.I_max, model.J, model.J, rule=mtz_ordering_rule)
+        # model.MTZAssignment = Constraint(model.I_max, model.J, rule=mtz_assignment_rule)
+        # model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
 
         #resource capacity and makespan constraints
         #model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
         #model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
-        model.StartCapacityCheck = Constraint(model.I_max, rule=start_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
+        model.CompletionCapacityCheck = Constraint(model.J, rule=completion_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
         #model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
         model.MakespanDefinition = Constraint(model.J, rule=makespan_rule_no_return) #substitutes MakespanDefinition but ignores return to base time
 
@@ -353,7 +363,10 @@ class MultiCriteriaMIPModel:
 
         #SolverFactory("gurobi", solver_io="direct")
         solver = SolverFactory(solver_name) 
-
+        
+        # if not solver.available():
+        #     print("Solver still not found. Check your PATH and Python environment.")
+            
         #add solver options based on the selected solver
         if solver_name == "glpk":
             if time_limit is not None:
@@ -381,6 +394,12 @@ class MultiCriteriaMIPModel:
                 solver.options['timelimit'] = time_limit  
             if mip_gap is not None:
                 solver.options['mipgap'] = mip_gap
+        elif solver_name == "cplex_persistent":
+            #solver.options['emphasis numerical'] = 3
+            if time_limit is not None:
+                solver.options['timelimit'] = time_limit  
+            if mip_gap is not None:
+                solver.options['mipgap'] = mip_gap
 
         instance = None
         results = None
@@ -389,9 +408,13 @@ class MultiCriteriaMIPModel:
             instance = self.model.create_instance(data_portal) if data_portal is not None else self.model.create_instance(data_file)
             results = solver.solve(instance, tee=True) # 'tee=True' prints the solver log to the console
 
-        else:
+        elif solver_name != "cplex_persistent":
             assert isinstance(self.model, ConcreteModel), "the model must be an ConcreteModel to use it directly!"
             results = solver.solve(self.model, tee=True) # 'tee=True' prints the solver log to the console
+        else:
+            #for cplex_persistent, the instance is already set in the solver
+            solver.set_instance(self.model)
+            results = solver.solve(tee=True)
         
         #it's possible to use dataPortal to load data directly from a dictionary or other sources
         #data = DataPortal(model=self.model)
@@ -406,6 +429,26 @@ class MultiCriteriaMIPModel:
         #     # Print the specific condition instead of crashing
         #     print(f"Solver terminated with non-optimal condition: {results.solver.termination_condition}")
         #     print(f"Solver status: {results.solver.status}")
+
+        if results.solver.termination_condition == TerminationCondition.infeasible:
+            print("Infeasible! Launching Conflict Refiner...")
+            
+            # Access the raw CPLEX engine object
+            cpx_engine = solver._solver_model
+            
+            # Trigger the conflict refinement
+            cpx_engine.conflict.refine()
+            
+            # Option A: Save the conflict to a file (Easiest to read)
+            cpx_engine.conflict.write("conflict_report.clp")
+            print("Conflict details saved to 'conflict_report.clp'")
+            
+            # Option B: Print conflict status directly
+            # Note: This returns a list of statuses for all constraints/bounds
+            conflicts = cpx_engine.conflict.get()
+            for i, status in enumerate(conflicts):
+                if status == cpx_engine.conflict.group_status.member:
+                    print(f"Index {i} is a member of the minimal conflict.")
 
         return instance, results
     
