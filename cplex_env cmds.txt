@@ -1,0 +1,8 @@
+in admin mode
+-py -3.10 "C:\Program Files\IBM\ILOG\CPLEX_Studio2211\python\setup.py" install
+-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+-.\cplex_env\Scripts\Activate.ps1
+-py -m ipykernel install --user --name cplex_env --display-name "Python 3.10 (CPLEX)"
+-pip install matplotlib numpy pandas sklearn pyomo pykernal
+
+on the top right of the jupyter file, choose cplex_env
