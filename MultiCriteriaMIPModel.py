@@ -1,6 +1,7 @@
 from pyomo.environ import *
 from pyomo.solvers.plugins.solvers.cplex_persistent import CPLEXPersistent
 from pyomo.gdp import Disjunction
+from collections import defaultdict
 import cplex
 
 class MultiCriteriaMIPModel:
@@ -87,6 +88,7 @@ class MultiCriteriaMIPModel:
         model.Beta = Param(initialize=beta)                                                         #Operator count weight (for sum of y_i)
 
         self._init_variables_and_constaints(model)
+        #self.initial_heuristic_presolve(model, travel_times, processing_times, missions, operators)
         
     def _init_variables_and_constaints(self, model):
 
@@ -145,13 +147,42 @@ class MultiCriteriaMIPModel:
                 return model.S[k] >= model.C[j] + model.T[j, k] - model.M_Time * (1 - model.z[i, j, k])
             
             return Constraint.Skip
+        
+        
+        def base_sequencing_rule(model, i, j):
+            '''
+            base sequencing/linking flow: Non-Overlapping sequencing from base to first mission.
+            '''
+            if j not in model.J:
+                return model.S[j] >= model.T[0, j] - model.M_Time * (1 - model.z[i, 0, j])
+            
+            return Constraint.Skip
 
         def sequencing_disjunction_rule(model, i, j, k):
+            '''
+            Sequencing/linking flow disjunction:
+            If z[i,j,k] = 1 then S[k] >= C[j] + T[j,k]
+            Else z[i,j,k] = 0
+            '''
             if j == k: 
                 return Disjunction.Skip
             return [
                 [model.z[i,j,k] == 1, model.S[k] >= model.C[j] + model.T[j,k]],
                 [model.z[i,j,k] == 0]
+            ]
+        
+        def base_departure_disjunction_rule(model, i, j):
+            '''
+            Base departure disjunction:
+            If z[i,0,j] = 1 then S[j] >= T[0]
+            Else z[i,0,j] = 0
+            '''
+            
+            if j not in model.J:
+                return Disjunction.Skip
+            return [
+                [model.z[i, 0, j] == 1, model.S[j] >= model.T[0, j]],
+                [model.z[i, 0, j] == 0]
             ]
 
         #mission assignment and flow constraints
@@ -338,8 +369,13 @@ class MultiCriteriaMIPModel:
         model.Objective = Objective(rule=objective_rule, sense=minimize)
 
         #scheduling and time constraints
-        #model.Sequencing = Constraint(model.I_max, model.J, model.J, rule=sequencing_rule)
-        model.indicator_con = Disjunction(model.I_max, model.J, model.J, rule=sequencing_disjunction_rule)
+        model.Sequencing = Constraint(model.I_max, model.J, model.J, rule=sequencing_rule)
+        model.BaseSequencing = Constraint(model.I_max, model.J, rule=base_sequencing_rule)
+        #the disjunctions should subtitute the big-M complexity in sequencing constraints,
+        #but they create too many auxiliary binary variables for every disjunct to handle the logic and make the model even larger.
+        # hence, it's better to keep the big-M_time formulation for now.
+        #model.sequencingDisjunction = Disjunction(model.I_max, model.J, model.J, rule=sequencing_disjunction_rule)
+        #model.BaseDepartureDisjunction = Disjunction(model.I_max, model.J, rule=base_departure_disjunction_rule)
         model.CompletionTime = Constraint(model.J, rule=completion_time_rule)
 
         #mission assignment and flow constraints
@@ -368,6 +404,53 @@ class MultiCriteriaMIPModel:
 
         self.model = model
         TransformationFactory('gdp.bigm').apply_to(self.model) #apply the big-M reformulation for disjunctions
+
+    def initial_heuristic_presolve(self, model, travel_times, processing_times, missions, operators):
+        '''
+        Apply initial heuristic presolve to the MIP model.
+        uses a greedy assignment based on processing times to fix some variables.
+        pre-assign missions using greedy load balancing with travel and processing times.
+        this can help reduce the problem size and improve solver performance.
+        '''
+        assignments = {}
+        # Current "end position" for each operator (starts at base=0)
+        operator_position = {i: 0 for i in operators}  #last mission or base
+        operator_load = {i: 0.0 for i in operators}    #total time so far
+        
+        unassigned = list(missions)
+        
+        while unassigned:
+            best_assignment = None
+            best_load_increase = float('inf')
+            
+            for j in unassigned:
+                for i in operators:
+                    # Travel from current position to j + processing at j
+                    travel_to_j = travel_times[(operator_position[i], j)]
+                    process_j = processing_times[(i, j)]
+                    total_add = travel_to_j + process_j
+                    
+                    if total_add < best_load_increase:
+                        best_load_increase = total_add
+                        best_assignment = (i, j)
+            
+            if best_assignment is None:
+                break  # No feasible assignment
+                
+            i, j = best_assignment
+            assignments[(i, j)] = 1
+            
+            # Update operator state
+            operator_load[i] += best_load_increase
+            operator_position[i] = j  # Now ends at j
+            
+            unassigned.remove(j)
+        
+        # Fix promising assignments in model (threshold for confidence)
+        for (i,j), val in assignments.items():
+            model.x[i,j].fix(1)
+        
+        print(f"Pre-assigned {len(assignments)} missions, avg load/operator: {sum(operator_load.values())/len(operators):.1f}")
 
     def solve(self, 
               data_file:str=None, 
