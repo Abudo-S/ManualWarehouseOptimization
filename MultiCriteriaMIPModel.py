@@ -2,6 +2,7 @@ from pyomo.environ import *
 from pyomo.solvers.plugins.solvers.cplex_persistent import CPLEXPersistent
 from pyomo.gdp import Disjunction
 from collections import defaultdict
+import math
 import cplex
 
 class MultiCriteriaMIPModel:
@@ -515,9 +516,11 @@ class MultiCriteriaMIPModel:
             results = solver.solve(instance, tee=True) # 'tee=True' prints the solver log to the console
 
         elif solver_name != "cplex_persistent":
+            instance = self.model
             assert isinstance(self.model, ConcreteModel), "the model must be an ConcreteModel to use it directly!"
             results = solver.solve(self.model, tee=True) # 'tee=True' prints the solver log to the console
         else:
+            instance = self.model
             #for cplex_persistent, the instance is already set in the solver
             solver.set_instance(self.model)
             results = solver.solve(tee=True)
@@ -557,6 +560,107 @@ class MultiCriteriaMIPModel:
                     print(f"Index {i} is a member of the minimal conflict.")
 
         return instance, results
+    
+    def add_bin_packing_cut(self, model):
+        ''' 
+        Add a bin-packing cut to the MIP model to improve lower bound on number of operators.
+        Estimate a lower bound on the number of operators needed based on total workload.
+        It helps tighten the formulation and speed up convergence.
+        '''
+
+        #sum of minimum processing time for each mission
+        min_process_total = sum(min(model.P[i,j] for i in model.I_max) for j in model.J)
+
+        #sum of (min_distance_to_j)
+        min_travel_total = sum(min(model.T[k,j] for k in model.J_prime if k!=j) for j in model.J)
+        
+        #total Work Load Lower Bound
+        total_work_load = min_process_total + min_travel_total
+        
+        #calculate Lower Bound on Y: H_fixed is the capacity of one bin (operator)
+        min_y_float = total_work_load / model.H_fixed
+        min_y_int = math.ceil(min_y_float)
+        
+        print(f"Adding Bin Packing Cut: Operators >= {min_y_int} (Load: {total_work_load:.1f}/{model.H_fixed})")
+
+        model.BinPackingCut = Constraint(expr=sum(model.y[i] for i in model.I_max) >= min_y_int)
+
+    def solve_two_phase(self,               
+                        mip_gap_phase1=None, 
+                        mip_gap_phase2=None,
+                        time_limit_phase1=None,
+                        time_limit_phase2=None, 
+                        bin_packing_cut=True,
+                        solver_name='cplex_direct'):
+        '''
+        Get rid of the weighted sum objective and use a two-phase approach to solve the MIP model.
+        the weighted sum objective can be problematic due to scaling issues between the two criteria.
+
+        Maybe not globally optimal w.r.t. Alpha*Z + Beta*y.
+        -Example: 6 operators take 100 min. (Obj = 100 + 6 = 106).
+        -Maybe 7 operators could do it in 50 min? (Obj = 50 + 7 = 57).
+        -If Alpha=Beta=1, the 7-operator solution is "better" (57 < 106), but our two-phase approach missed it because Phase 1 locked in 6 operators.
+        a trade-off between theoretical global optimality for solvability and practical efficiency,
+        but it often yields good results in real-world practice especially for costs.
+        Solve the MIP model using a two-phase approach:
+        phase 1: Minimize the number of operators used.
+        phase 2: Minimize the makespan with fixed number of operators from Phase 1.
+        bin_packing_cut: whether to add a bin-packing cut to improve lower bound on number of operators (default: True).
+        solver_name: name of the solver to use {glpk, cbc, groubi, cplex} (default: 'cplex_direct').
+        '''
+        assert isinstance(self.model, ConcreteModel), "the model must be an ConcreteModel to use two_phase solving!"
+
+        instance = self.model
+        if bin_packing_cut:
+            self.add_bin_packing_cut(self.model)
+
+        solver = SolverFactory(solver_name)
+        
+        #phase 1: Min operators
+        self.model.Objective.deactivate()
+        self.model.MinOperators = Objective(expr=sum(self.model.y[i] for i in self.model.I_max))
+
+        if time_limit_phase1 is not None:
+            solver.options['timelimit'] = time_limit_phase1  
+        if mip_gap_phase1 is not None:
+            solver.options['mipgap'] = mip_gap_phase1 
+
+        results1 = solver.solve(self.model, tee=True)
+        
+        if time_limit_phase1 is not None:
+            solver.options['timelimit'] = 0  
+        if mip_gap_phase1 is not None:
+            solver.options['mipgap'] = 0 
+
+        if results1.solver.termination_condition != TerminationCondition.optimal:
+            print("Phase 1 failed to find min operators!")
+            return
+        
+        min_ops_count = sum(self.model.y[i].value for i in self.model.I_max)
+        print(f"Phase 1 complete: Requires {min_ops_count} operators.")
+
+        #phase 2: Min makespan  
+        self.model.MinOperators.deactivate()
+        self.model.MinMakespan = Objective(expr=self.model.Z, sense=minimize)
+
+        for i in self.model.I_max:
+            self.model.y[i].fix(round(self.model.y[i].value))
+
+        if time_limit_phase2 is not None:
+            solver.options['timelimit'] = time_limit_phase2  
+        if mip_gap_phase2 is not None:
+            solver.options['mipgap'] = mip_gap_phase2
+        
+        results2 = solver.solve(self.model, tee=True)
+        if results2.solver.termination_condition != TerminationCondition.optimal:
+            print("Phase 2 (scheduling) suboptimal.")
+
+        print(f"Final Schedule:")
+        print(f"Operators: {min_ops_count}")
+        print(f"Makespan: {self.model.Z.value} min")
+
+        return instance, results2
+
     
     def display_solution(self, instance=None):
         '''
