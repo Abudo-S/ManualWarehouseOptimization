@@ -397,11 +397,11 @@ class MultiCriteriaMIPModel:
         model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
 
         #resource capacity and makespan constraints
-        #model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
-        #model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
-        model.CompletionCapacityCheck = Constraint(model.J, rule=completion_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
-        #model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
-        model.MakespanDefinition = Constraint(model.J, rule=makespan_rule_no_return) #substitutes MakespanDefinition but ignores return to base time
+        model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
+        model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
+        #model.CompletionCapacityCheck = Constraint(model.J, rule=completion_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
+        model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
+        #model.MakespanDefinition = Constraint(model.J, rule=makespan_rule_no_return) #substitutes MakespanDefinition but ignores return to base time
 
         self.model = model
         TransformationFactory('gdp.bigm').apply_to(self.model) #apply the big-M reformulation for disjunctions
@@ -591,6 +591,7 @@ class MultiCriteriaMIPModel:
                         time_limit_phase1=None,
                         time_limit_phase2=None, 
                         bin_packing_cut=True,
+                        relax_second_phase=True,
                         solver_name='cplex_direct'):
         '''
         Get rid of the weighted sum objective and use a two-phase approach to solve the MIP model.
@@ -607,6 +608,7 @@ class MultiCriteriaMIPModel:
         phase 2: Minimize the makespan with fixed number of operators from Phase 1.
         bin_packing_cut: whether to add a bin-packing cut to improve lower bound on number of operators (default: True).
         solver_name: name of the solver to use {glpk, cbc, groubi, cplex} (default: 'cplex_direct').
+        relax_second_phase: apply slack variable relaxation on CapacityCheck.
         '''
         assert isinstance(self.model, ConcreteModel), "the model must be an ConcreteModel to use two_phase solving!"
 
@@ -641,7 +643,21 @@ class MultiCriteriaMIPModel:
 
         #phase 2: Min makespan  
         self.model.MinOperators.deactivate()
-        self.model.MinMakespan = Objective(expr=self.model.Z, sense=minimize)
+
+        #60 min buffer slack for capacity constraints (to avoid infeasibility, but introduces suboptimality)        
+        self.model.Slack = Var(self.model.I_max, bounds=(0, 60)) 
+        def relaxed_capacity_check(model, i):
+            #check active operators only
+            return model.C_last[i] <= model.H_fixed * model.y[i] + model.Slack[i]
+
+        if relax_second_phase: #replace tight capacityCheck constraint
+            self.model.CapacityCheck.deactivate()
+            self.model.RelaxedCapacityCheck = Constraint(self.model.I_max, rule=relaxed_capacity_check)
+
+            #penalize overtime lightly
+            self.model.MinMakespan = Objective(expr=self.model.Z + 10*sum(self.model.Slack), sense=minimize)
+        else:
+            self.model.MinMakespan = Objective(expr=self.model.Z, sense=minimize)
 
         for i in self.model.I_max:
             self.model.y[i].fix(round(self.model.y[i].value))
