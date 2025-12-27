@@ -278,7 +278,7 @@ class MultiCriteriaMIPModel:
         def symmetry_break_rule(model, i):
             '''
             Symmetry breaking: to reduce symmetric/interchangable solutions, we need to
-            enforce an ordering on operator activation.
+            enforce an ordering on operator activation. This symmetry break introduces a pruning in tree navigation.
             y[i] <= y[i-1] for all i in I_max, i != first operator
             '''
 
@@ -292,7 +292,7 @@ class MultiCriteriaMIPModel:
             
             #operator i can only be active if operator i-1 is active.
             return model.y[i] <= model.y[previous_operator] 
-        
+
         #MTZ constraints (prevent sub-tours) 
         def mtz_ordering_M_rule(model, i, j, k):
             '''
@@ -390,8 +390,8 @@ class MultiCriteriaMIPModel:
         model.BaseOutflow = Constraint(model.I_max, rule=base_outflow_rule)
         model.BaseInflow = Constraint(model.I_max, rule=base_inflow_rule)
         model.SymmetryBreak = Constraint(model.I_max, rule=symmetry_break_rule)
-        
-        # #MTZ constraints
+
+        #MTZ constraints
         model.MTZOrdering = Constraint(model.I_max, model.J, model.J, rule=mtz_ordering_rule)
         model.MTZAssignment = Constraint(model.I_max, model.J, rule=mtz_assignment_rule)
         model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
