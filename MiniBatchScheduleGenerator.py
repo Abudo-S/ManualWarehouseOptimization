@@ -2,15 +2,16 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import importlib
+import random
 from collections import defaultdict
 from pyomo.environ import *
 from ParameterDataLoader import ParameterDataLoader
 from MultiCriteriaMIPModel import MultiCriteriaMIPModel
 
 #when ALPHA is almost equal to BETA, the solver struggles to find an optimal feasible solution & it converges slowly
-H_FIXED_MINUTES = 480
+H_FIXED_MINUTES = 480 #480 for base shift 
 ALPHA = 1.0 #makespan weight
-BETA = 100.0 #operator activation weight (100 = fully oriented to operator activation, 50 = balanced)
+BETA = 100.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
 MISSION_BATCH_DIR = "./datasets/mini-batch/Batch10M_distanced.csv"
@@ -83,7 +84,7 @@ class MiniBatchScheduleGenerator:
         print("Calculated M_value for Big-M_Time is: ", M_value)
         return M_value
 
-    def save_schedule(self, instance, batch_name):
+    def save_schedule(self, instance, batch_name, h_fixed):
         solution_data = []
         for i in instance.I_max:
             try:
@@ -117,13 +118,13 @@ class MiniBatchScheduleGenerator:
             df_schedule = df_schedule.sort_values(by=['Operator', 'Start']).reset_index(drop=True)
             try:
                 #save the schedule to a CSV file
-                filename = f'{SCHEDULE_DIR}schedule{batch_name}_A{ALPHA}_B{BETA}.csv'
+                filename = f'{SCHEDULE_DIR}schedule{batch_name}_A{ALPHA}_B{BETA}_H{h_fixed}.csv'
                 df_schedule.to_csv(filename, index=False)
                 print(f"\nSuccessfully saved schedule to {filename}")
             except Exception as e:
                 print(f"Error saving to CSV: {e}")
 
-    def save_schedule_steps(self, instance, batch_name):
+    def save_schedule_steps(self, instance, batch_name, h_fixed):
         #initialize list to store all route data
         solution_data = []
 
@@ -220,7 +221,7 @@ class MiniBatchScheduleGenerator:
             print("Preview of Export Data:")
             print(df_routes.head())
 
-            filename = f'{SCHEDULE_DIR}schedule{batch_name}_A{ALPHA}_B{BETA}_travel.csv'
+            filename = f'{SCHEDULE_DIR}schedule{batch_name}_A{ALPHA}_B{BETA}_H{h_fixed}_travel.csv'
             df_routes.to_csv(filename, index=False)
             print(f"\nSuccessfully saved routes to {filename}")
 
@@ -228,7 +229,7 @@ class MiniBatchScheduleGenerator:
             print("No active routes found to export.")
 
 
-    def __init__(self, n_mini_batches, start_n=1):
+    def __init__(self, n_mini_batches, start_n=1, use_h_fixed=True):
 
         #with mission TP_UDC, we can retreive relative width and length from mission types
         #mission_batch_features = ['CD_MISSION', 'TP_MISSION', 'FROM_X', 'FROM_Y', 'TO_X', 'TO_Y', 'TP_UDC', 'DISTANCE']
@@ -239,6 +240,7 @@ class MiniBatchScheduleGenerator:
         #fork_lifts_features = ['OID', 'FORK_WIDTH', 'FORK_LENGTH', 'SPEED', 'SPEED_WITH_LOAD']
         #mission_types_features = ['TP_MISSION', 'DSC_MISSION']
         features_to_scale = ['FROM_Z','TO_Z']
+        possibile_h_fixed = [60, 90, 120, 480]
 
         for mini_batch_number in range(start_n, n_mini_batches + 1):
             print(f'----------------------------WORKING WITH MINI-BATCH [{mini_batch_number}]----------------------------')
@@ -312,6 +314,7 @@ class MiniBatchScheduleGenerator:
                                                                                       mission_batch_df_scaled)
             M_value = self.calculate_M_time(total_travel_maxs, total_processing_maxs)
 
+            h_fixed = H_FIXED_MINUTES if use_h_fixed else random.choice(possibile_h_fixed)
             mcmModel = MultiCriteriaMIPModel(missions,
                                  operators,
                                  pallet_types,
@@ -320,7 +323,7 @@ class MiniBatchScheduleGenerator:
                                  travel_times,
                                  skill_scores,
                                  mission_pallet_types,
-                                 H_FIXED_MINUTES,
+                                 h_fixed,
                                  ALPHA,
                                  BETA,
                                  M_value,
@@ -330,8 +333,8 @@ class MiniBatchScheduleGenerator:
             instance, results = mcmModel.solve(solver_name="cplex_direct")
             
             batch_name = f"{BATCH_NAME}_{mini_batch_number}"
-            self.save_schedule(instance, batch_name)
-            self.save_schedule_steps(instance, batch_name)
+            self.save_schedule(instance, batch_name, h_fixed)
+            self.save_schedule_steps(instance, batch_name, h_fixed)
 
 if __name__ == "__main__":
-    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=90)
+    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=90, use_h_fixed=False)
