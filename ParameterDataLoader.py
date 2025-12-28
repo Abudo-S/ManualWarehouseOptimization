@@ -3,8 +3,8 @@ import pyomo.environ as pyo
 
 #Maximum allowed difference between fork dimensions and pallet type dimensions to consider the fork lift suitable for the pallet type.
 FORK_DIMENSIONS_EXCEEDING_THRESHOLD = 0.20 #percentage in fork length/width.
-ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION = 5 #minutes
-ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION = 5 #minutes
+ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION = 10 #minutes
+ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION = 10 #minutes
 
 class ParameterDataLoader:
 
