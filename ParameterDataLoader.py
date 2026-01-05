@@ -27,6 +27,9 @@ class ParameterDataLoader:
         self.fork_lifts_df['SPEED'].fillna(300, inplace=True)
         self.mean_fork_lift_speed = self.fork_lifts_df['SPEED'].mean()
 
+        self.fork_lifts_df[['UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']].fillna(30, inplace=True)
+        
+
     # def get_data_portal(self, model:pyo.AbstractModel) -> pyo.DataPortal:
     #     data_portal = pyo.DataPortal()
     #     mission_batch_list= self.mission_batch_df.CD_MISSION.to_list()
@@ -44,8 +47,7 @@ class ParameterDataLoader:
             The processing time of a mission is defined as the time taken by an operator to complete the mission.
             A mission processing time is calculated as a sum the time of loading, the time to travel with the relative pallet, and the time of unloading.
         '''
-        self.fork_lifts_df[['UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']].fillna(30, inplace=True)
-        
+
         return {(int(fork_lift['OID']), int(mission['CD_MISSION'])): (mission['FROM_Z']/fork_lift['UP_SPEED']) + 
                                 (mission['FROM_Z']/fork_lift['DOWN_SPEED_WITH_LOAD']) + 
                                 (mission['DISTANCE']/fork_lift['SPEED_WITH_LOAD']) + 
