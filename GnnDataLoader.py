@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 #from torch_geometric.data import Data
 from torch_geometric.data import HeteroData
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import numpy as np
 import os
 import re
@@ -32,9 +32,9 @@ class GnnDataLoader:
 
         assert match, f"Can't extract global params from '{filename}'"
 
-        alpha = match.group('A')
-        beta = match.group('B')
-        h_fixed = match.group('H')
+        alpha = float(match.group('A'))
+        beta = float(match.group('B'))
+        h_fixed = float(match.group('H'))
         
         return alpha, beta, h_fixed
 
@@ -49,7 +49,7 @@ class GnnDataLoader:
         #parse global parameters
         filename = os.path.basename(schedule_file_path)
         alpha, beta, h_fixed = self.parse_filename_params(filename)
-        print(f"Global params extracted for[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
+        print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
 
         #load dataframe
         df_missions = pd.read_csv(node_file_path)
@@ -57,10 +57,6 @@ class GnnDataLoader:
         df_ops = pd.read_csv(operator_file_path)
         df_edges = pd.read_csv(edge_file_path)
         df_schedule = pd.read_csv(schedule_file_path)
-
-        df_ops['SPEED'].fillna(300, inplace=True)
-        df_ops[['UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']].fillna(30, inplace=True)
-        mean_speed = df_ops['SPEED'].mean()
 
         #concatenate pallet type features in mission features
         df_missions = df_missions.merge(df_pallet_types[['TP_UDC', 'WIDTH', 'LENGTH']], on='TP_UDC', how='left')
@@ -76,22 +72,25 @@ class GnnDataLoader:
         
         #actual_assignments = set(zip(df_schedule['Operator_ID'], df_schedule['To_Node']))
 
-        #feature engineering (nodes)
         scaler = MinMaxScaler()
         
+        #-STR-node feature engineering
+
         #mission features [pallet dims, dest axes]
-        mission_feats_raw = df_missions[[
-            'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'TO_X', 'TO_Y', 'TO_Z'
-        ]].fillna(0).values
-        df_missions_scaled = scaler.fit_transform(mission_feats_raw)
-        x_missions = torch.tensor(df_missions_scaled, dtype=torch.float)
+        missions_features = [
+            'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'FROM_X', 'FROM_Y', 'FROM_Z','TO_X', 'TO_Y', 'TO_Z'
+        ]
+        mission_feats_raw = df_missions[missions_features].fillna(0)
+        missions_scaled = scaler.fit_transform(mission_feats_raw)
+        x_missions = torch.tensor(missions_scaled, dtype=torch.float)
 
         #operator features [Speed, Fork dims]
-        op_feats_raw = df_ops[[
-            'SPEED', 'UP_SPEED', 'DOWN_SPEED', 'FORK_WIDTH', 'FORK_LENGTH'
-        ]].fillna(0).values
+        operator_features = [
+            'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
+        ]
+        op_feats_raw = df_ops[operator_features].fillna(0).values
         
-        #create H_fixed column (same for all ops in this batch, based on filename)
+        #add H_fixed column (same for all ops in this batch, based on filename)
         #if H is dynamic per operator, we'd read it from csv. Here it's global per file.
         # op_feats_norm = scaler.fit_transform(op_feats_raw)
         # h_fixed_col = np.full((num_ops, 1), h_fixed)
@@ -100,82 +99,109 @@ class GnnDataLoader:
         #     torch.tensor(op_feats_norm, dtype=torch.float),
         #     torch.tensor(h_fixed_col, dtype=torch.float)
         # ], dim=1)
+        
+        #scale Z_features since they are not real in our dataset
+        features_to_scale = ['FROM_Z','TO_Z']
+        df_to_scale = df_missions[features_to_scale]
 
-        df_ops_scaled = scaler.fit_transform(op_feats_raw)
-        x_ops = torch.tensor(df_ops_scaled, dtype=torch.float)
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(df_to_scale)
 
-        BASE_MISSION = [0, 0, 0, 0, 0, 0, 0] 
-        mission_batch_df_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=df_missions_scaled.columns), df_missions_scaled], ignore_index=True)
-        parameter_data_loader = ParameterDataLoader(
-            df_missions_scaled,
-            df_missions,
-            df_edges,
-            df_ops_scaled,
-            df_pallet_types,
-            BIG_M
+        df_scaled_features = pd.DataFrame(
+            scaled_data,
+            columns=features_to_scale,
+            index=df_missions.index
         )
+
+        df_scaled_features = df_scaled_features.clip(lower=0)
+        #df_scaled_features.head()
+
+        df_unscaled_features = df_missions.drop(columns=features_to_scale)
+
+        mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
+
+        ops_scaled = scaler.fit_transform(op_feats_raw)
+        x_ops = torch.tensor(ops_scaled, dtype=torch.float)
+
+        BASE_MISSION = [0 for _ in range(len(mission_batch_df_scaled.columns))]
+        df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
+    
+        parameter_data_loader = ParameterDataLoader(
+            mission_batch_df=mission_batch_df_scaled,
+            mission_batch_with_base_df=df_missions_batch_with_base, 
+            mission_batch_travel_df=df_edges,
+            fork_lifts_df=df_ops,
+            pallet_types_df=df_pallet_types,
+            Big_M=BIG_M
+        )
+
+        #extract time dicts
+        #dict: {(op_id, mission_id): processing_time}
+        processing_times = parameter_data_loader.get_mission_processing_times()
+        
+        #dict: {(mission_id_1, mission_id_2): travel_time}
+        travel_times = parameter_data_loader.get_mission_travel_times()
 
         #initialize HeteroData
         data = HeteroData()
-        data['mission'].x = x_missions
+        data['order'].x = x_missions
         data['operator'].x = x_ops
-        data['mission'].global_id = torch.tensor(mission_ids, dtype=torch.long)
+        data['order'].global_id = torch.tensor(mission_ids, dtype=torch.long)
         data['operator'].global_id = torch.tensor(op_ids, dtype=torch.long)
 
         #global state vector (u) for Meta-Layer
         #[Alpha, Beta, H_fixed] is stored as a global graph feature
         data.u = torch.tensor([[alpha, beta, h_fixed]], dtype=torch.float)
 
-        #edge engineering
+        #-STR-edge feature engineering
         
-        #order-order edges (static map for all possible connections with)
-        src_list, dst_list, attr_list = [], [], []
-        for _, row in df_edges.iterrows():
-            id1, id2 = int(row['CD_MISSION_1']), int(row['CD_MISSION_2'])
-            dist = row['DISTANCE']
-            
-            if id1 in order_map and id2 in order_map:
-                src_list.append(order_map[id1])
-                dst_list.append(order_map[id2])
-                attr_list.append([dist])
-                
+        #order-order edges (all possible sequencing/scheduling between orders w.r.t. travel times)
+        src_list, dst_list, travel_time_list = [], [], []
+    
+        for (m1, m2), t_time in travel_times.items():
+            if m1 in order_map and m2 in order_map:
+                src_list.append(order_map[m1])
+                dst_list.append(order_map[m2])
+                travel_time_list.append([t_time])
+        
         edge_index_ord = torch.tensor([src_list, dst_list], dtype=torch.long)
-        edge_attr_ord = torch.tensor(attr_list, dtype=torch.float)
+        edge_attr_ord = torch.tensor(travel_time_list, dtype=torch.float)
+        
+        #normalize travel times (max-normalization)
+        #for deep GNNs with attention mechanisms, normalization is mandatory to prevent numerical instability
         if edge_attr_ord.shape[0] > 0:
-            edge_attr_ord = edge_attr_ord / edge_attr_ord.max() #normalize
-
+            edge_attr_ord = edge_attr_ord / edge_attr_ord.max()
+        
         data['order', 'to', 'order'].edge_index = edge_index_ord
         data['order', 'to', 'order'].edge_attr = edge_attr_ord
 
-        #operator-order edges (fully connected availability based on processing time)
-        src_ops, dst_missions, op_dist_list = [], [], []
-        mission_coords = df_missions.set_index('CD_MISSION')[['FROM_X', 'FROM_Y', 'FROM_Z']].to_dict('index')
+        #operator-order edges (all possible assignment between orders/operators w.r.t. processing times)
+        src_ops, dst_ords, proc_time_list = [], [], []
         
-        for op_id in op_ids:
-            for mission_id in mission_ids:
-                if mission_id not in mission_coords: continue
-
-                #assume Depot at (0,0) for initial distance
-                d_x = mission_coords[mission_id]['FROM_X']
-                d_y = mission_coords[mission_id]['FROM_Y']
-                d_z = mission_coords[mission_id]['FROM_Z']
-                dist = np.sqrt(d_x**2 + d_y**2)
+        for (op_id, ord_id), p_time in processing_times.items():
+            if op_id in op_map and ord_id in order_map:
                 src_ops.append(op_map[op_id])
-                dst_missions.append(order_map[mission_id])
-                op_dist_list.append([dist])
+                dst_ords.append(order_map[ord_id])
+                proc_time_list.append([p_time])
+        
+        data['operator', 'assign', 'order'].edge_index = torch.tensor([src_ops, dst_ords], dtype=torch.long)
 
-        data['operator', 'assign', 'order'].edge_index = torch.tensor([src_ops, dst_missions], dtype=torch.long)
-        op_edge_attr = torch.tensor(op_dist_list, dtype=torch.float)
+        #normalize processing times (max-normalization)
+        #for deep GNNs with attention mechanisms, normalization is mandatory to prevent numerical instability
+        op_edge_attr = torch.tensor(proc_time_list, dtype=torch.float)
         if op_edge_attr.shape[0] > 0:
             op_edge_attr = op_edge_attr / op_edge_attr.max()
+        
         data['operator', 'assign', 'order'].edge_attr = op_edge_attr
 
-        # --- 7. Ground Truth Labels ---
+
+        #-STR-ground truth labelling (based on MIP mini-batch schedule)
         
-        # Activation Labels
+        #activation Labels
         active_op_indices = set()
-        # Filter schedule for valid ops
+        #verify operators that actually exist in Op files
         valid_ops_in_schedule = [o for o in df_schedule['Operator'].unique() if o in op_map]
+        
         for op_id in valid_ops_in_schedule:
             active_op_indices.add(op_map[op_id])
                 
@@ -183,13 +209,14 @@ class GnnDataLoader:
         y_activation[list(active_op_indices)] = 1.0
         data['operator'].y = y_activation
 
-        # Sequence & Assignment Labels
+        #assignment & sequence labels
         num_op_edges = data['operator', 'assign', 'order'].edge_index.shape[1]
         num_ord_edges = data['order', 'to', 'order'].edge_index.shape[1]
+        
         y_assign = torch.zeros(num_op_edges, dtype=torch.float)
         y_seq = torch.zeros(num_ord_edges, dtype=torch.float)
         
-        # Edge Lookup Maps
+        #lookup maps for edge indices
         op_edge_lookup = {
             (s.item(), d.item()): i 
             for i, (s, d) in enumerate(zip(*data['operator', 'assign', 'order'].edge_index))
@@ -199,27 +226,27 @@ class GnnDataLoader:
             for i, (s, d) in enumerate(zip(*data['order', 'to', 'order'].edge_index))
         }
 
-        # Labeling Logic
         for op_id, group in df_schedule.groupby('Operator'):
             if op_id not in op_map: continue
             op_idx = op_map[op_id]
-            tasks = group.sort_values('Start')
             
-            # 1. First Task Assignment
-            if not tasks.empty:
-                first_task = tasks.iloc[0]['Task']
-                if first_task in order_map:
-                    f_idx = order_map[first_task]
+            #sort missions by start time
+            missions = group.sort_values('Start')
+            
+            #first mission assignment (op -assign-> first order)
+            if not missions.empty:
+                first_mission = missions.iloc[0]['Task']
+                if first_mission in order_map:
+                    f_idx = order_map[first_mission]
                     if (op_idx, f_idx) in op_edge_lookup:
                         y_assign[op_edge_lookup[(op_idx, f_idx)]] = 1.0
 
-            # 2. Sequence (Task -> Next Task)
-            # Using the explicit 'Successor' column provided in your file
+            #sequence (order -to-> succ_order)
             for _, row in group.iterrows():
                 curr = row['Task']
                 succ = row['Successor']
                 
-                # '0' usually means End of Route
+                #ignore '0' that denotes end of route (return to base)
                 if curr in order_map and succ != 0 and succ in order_map:
                     u, v = order_map[curr], order_map[succ]
                     if (u, v) in ord_edge_lookup:
@@ -433,23 +460,27 @@ f_sched_filename = os.path.join(SCHEDULE_DIR, [f for f in os.listdir(SCHEDULE_DI
 f_sched_travel_filename = os.path.join(SCHEDULE_DIR, [f for f in os.listdir(SCHEDULE_DIR) if scheduleTravelPattern.match(f)][0])
 
 gnn_data_loader = GnnDataLoader()
-gnn_data = gnn_data_loader.build_constrained_gnn_data(f_nodes_filename,
-                                                   f_edges_filename,
-                                                   f_sched_filename, 
-                                                   f_sched_travel_filename)
+# gnn_data = gnn_data_loader.build_constrained_gnn_data(f_nodes_filename,
+#                                                    f_edges_filename,
+#                                                    f_sched_filename, 
+#                                                    f_sched_travel_filename)
 
 data = gnn_data_loader.load_and_process_data(f_nodes_filename,
+                                            UDC_TYPES_DIR,
                                             FORK_LIFTS_DIR,
                                             f_edges_filename,
-                                            f_sched_filename )
+                                            f_sched_filename)
 
-print("\n--- Data Object Summary ---")
+print(f"\n--- mini-batch [{mini_batch_number}] Generated HeteroData Object ---")
+print(data)
 print(f"Global Context (Alpha, Beta, H): {data.u}")
-print(f"Operator Features (incl H_fixed): {data['operator'].x.shape}")
 print(f"Order Nodes: {data['order'].x.shape}")
+print(f"Operator Nodes: {data['operator'].x.shape}")
+print(f"Order-Order Edges (Travel Time): {data['order', 'to', 'order'].edge_attr.shape}")
+print(f"Op-Order Edges (Processing Time): {data['operator', 'assign', 'order'].edge_attr.shape}")
 
-print(f"\n--- mini-batch [{mini_batch_number}] GNN Data Object Created ---")
-print(gnn_data)
-print(f"Nodes features shape: {gnn_data.x.shape}")
-print(f"Edge index shape: {gnn_data.edge_index.shape}")
-print(f"Labels shape: {gnn_data.y.shape}")
+# print(f"\n--- mini-batch [{mini_batch_number}] GNN Data Object Created ---")
+# print(gnn_data)
+# print(f"Nodes features shape: {gnn_data.x.shape}")
+# print(f"Edge index shape: {gnn_data.edge_index.shape}")
+# print(f"Labels shape: {gnn_data.y.shape}")
