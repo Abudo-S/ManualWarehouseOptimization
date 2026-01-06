@@ -7,7 +7,9 @@ import numpy as np
 import os
 import re
 from ParameterDataLoader import ParameterDataLoader
+from MultiCriteriaGNNModel import MultiCriteriaGNNModel
 
+#file paths
 MISSION_BATCH_DIR = "./datasets/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
 MISSION_BATCH_TRAVEL_DIR = "./datasets/mini-batch/Batch10M_travel_distanced.csv"
@@ -484,3 +486,23 @@ print(f"Op-Order Edges (Processing Time): {data['operator', 'assign', 'order'].e
 # print(f"Nodes features shape: {gnn_data.x.shape}")
 # print(f"Edge index shape: {gnn_data.edge_index.shape}")
 # print(f"Labels shape: {gnn_data.y.shape}")
+
+model = MultiCriteriaGNNModel(
+    metadata=data.metadata(),
+    hidden_dim=64,
+    num_layers=3,
+    heads=4
+)
+
+#forward Pass
+out = model(
+    data.x_dict, 
+    data.edge_index_dict, 
+    data.edge_attr_dict,
+    data.u
+)
+
+print("Forward Pass Successful.")
+print(f"Activation Logits: {out['activation'].shape}")
+print(f"Assignment Logits: {out['assignment'].shape}")
+print(f"Sequence Logits:   {out['sequence'].shape}")
