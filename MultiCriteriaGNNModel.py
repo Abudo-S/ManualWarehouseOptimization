@@ -39,8 +39,16 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                     (hidden_dim, hidden_dim), hidden_dim // heads, 
                     heads=heads, edge_dim=1, add_self_loops=False
                 ),
+
                 #add reverse edges if the graph is bi-directional or needed for flow
-                #for now, we stick to the forward flow defined in data
+                #operator updates (from potential orders)
+                ('order', 'rev_assign', 'operator'): GATv2Conv(
+                    (hidden_dim, hidden_dim), #(source=order, target=op)
+                    hidden_dim // heads, 
+                    heads=heads, 
+                    edge_dim=1, 
+                    add_self_loops=False
+                )
             }
             
             #HeteroConv wraps these standard GAT layers
@@ -59,7 +67,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             Linear(hidden_dim, 1) #logits for binary classification
         )
         
-        #assignment head (edge classification for op -> order)
+        #assignment head (edge classification for op i -> order j)
         #input: op_embedding + order_embedding + global + edge_attr (time)
         #64 + 64 + 3 + 1 = 132
         self.assign_head = Sequential(
@@ -78,10 +86,22 @@ class MultiCriteriaGNNModel(torch.nn.Module):
 
     def forward(self, x_dict, edge_index_dict, edge_attr_dict, u):
         """
+        The model performs message passing and then applies three separate heads for different classification tasks.
         x_dict: Node features {'order': [N, 7], 'operator': [M, 4]}
         edge_index_dict: Connectivity
         edge_attr_dict: Edge Features (Time) {'order__to__order': [E, 1], ...}
         u: Global params [Batch, 3]
+        Returns:
+            Dict with keys:
+            'activation': [num_ops, 1] logits for operator activation
+            'assignment': [num_assign_edges, 1] logits for op->order assignment
+            'sequence': [num_seq_edges, 1] logits for order->order sequencing
+        Logits order is consistent with input order "edge_index".
+        The logits are converted to probabilities via sigmoid.
+        The probabilities can be interpreted as:
+        - Activation: Probability that an operator should be activated.
+        - Assignment: Probability that an operator should be assigned to a specific order.
+        - Sequence: Probability that one order should precede another in the sequence.
         """
         
         #initial projection
@@ -107,7 +127,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         #concat: [op_emb, global]
         op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
-        out_activation = self.activation_head(op_feat_final)
+        #apply sigmoid to squash raw logits to [0, 1] probability
+        out_activation = torch.sigmoid(self.activation_head(op_feat_final))
 
         #head 2: assignment (op -> order edges)
         #we need to gather embeddings for source (op) and dest (order)
@@ -124,7 +145,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         #concat: [op, order, global, time]
         assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr], dim=1)
-        out_assign = self.assign_head(assign_input)
+
+        #apply sigmoid to squash raw logits to [0, 1] probability
+        out_assign = torch.sigmoid(self.assign_head(assign_input))
 
         #head 3: sequence (order -> order edges)
         src_idx, dst_idx = edge_index_dict[('order', 'to', 'order')]
@@ -137,7 +160,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         u_edges = u.expand(num_edges, -1)
         
         seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr], dim=1)
-        out_seq = self.seq_head(seq_input)
+
+        #apply sigmoid to squash raw logits to [0, 1] probability
+        out_seq = torch.sigmoid(self.seq_head(seq_input))
         
         return {
             'activation': out_activation, #[num_ops, 1]

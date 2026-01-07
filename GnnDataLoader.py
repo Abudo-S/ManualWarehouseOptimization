@@ -196,6 +196,15 @@ class GnnDataLoader:
         
         data['operator', 'assign', 'order'].edge_attr = op_edge_attr
 
+        #reverse Edge (Order -> Op):  An operator also needs to know about the Orders it might take (to update its own state/embedding)
+        rev_edge_index = data['operator', 'assign', 'order'].edge_index.flip([0])
+        
+        #same edge attributes (travel time is undirected/symmetric usually)
+        rev_edge_attr = data['operator', 'assign', 'order'].edge_attr
+
+        data['order', 'rev_assign', 'operator'].edge_index = rev_edge_index
+        data['order', 'rev_assign', 'operator'].edge_attr = rev_edge_attr
+        
 
         #-STR-ground truth labelling (based on MIP mini-batch schedule)
         
@@ -503,6 +512,6 @@ out = model(
 )
 
 print("Forward Pass Successful.")
-print(f"Activation Logits: {out['activation'].shape}")
-print(f"Assignment Logits: {out['assignment'].shape}")
-print(f"Sequence Logits:   {out['sequence'].shape}")
+print(f"Activation Logits: {out['activation']}")
+print(f"Assignment Logits: {out['assignment']}")
+print(f"Sequence Logits:   {out['sequence']}")
