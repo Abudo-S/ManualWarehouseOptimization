@@ -460,6 +460,8 @@ class GnnDataLoader:
         
         return data
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
 
 mini_batch_number = 1
 schedulePattern = re.compile(fr'schedule.+_{mini_batch_number}.+H\d{{1,4}}.csv')
@@ -481,6 +483,7 @@ data = gnn_data_loader.load_and_process_data(f_nodes_filename,
                                             FORK_LIFTS_DIR,
                                             f_edges_filename,
                                             f_sched_filename)
+data.to(device)
 
 print(f"\n--- mini-batch [{mini_batch_number}] Generated HeteroData Object ---")
 print(data)
@@ -501,9 +504,9 @@ model = MultiCriteriaGNNModel(
     hidden_dim=64,
     num_layers=3,
     heads=4
-)
+).to(device)
 
-#forward Pass
+#forward pass example
 out = model(
     data.x_dict, 
     data.edge_index_dict, 
