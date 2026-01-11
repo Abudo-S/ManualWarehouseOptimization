@@ -22,7 +22,7 @@ ALPHA = 1.0 #makespan weight
 BETA = 1000.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
-class GnnDataLoader:
+class GnnDataInstanceBuilder:
     
     def parse_filename_params(self, filename):
         """
@@ -268,253 +268,55 @@ class GnnDataLoader:
 
         return data
 
-    # def build_constrained_gnn_data(
-    #     mission_file, 
-    #     forklift_file,
-    #     schedule_file, 
-    #     pallet_types_file,
-    #     travel_file
-    # ):
-    #     df_missions = pd.read_csv(mission_file)
-    #     df_forklifts = pd.read_csv(forklift_file)
-    #     df_edges = pd.read_csv(travel_file)
-    #     df_schedule = pd.read_csv(schedule_file)
-    #     df_pallet_types = pd.read_csv(pallet_types_file)
-        
-    #     #extract Global Parameters from schedule_file filename
-    #     pattern = r"A(?P<A>[\d.]+)_B(?P<B>[\d.]+)_H(?P<H>\d+)"
-    #     match = re.search(pattern, schedule_file)
+#try to build just one HetroData from a mini-batch
+if __name__ == "__main__":
 
-    #     assert match, f"Can't extract global params from '{schedule_file}'"
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
 
-    #     alpha = match.group('A')
-    #     beta = match.group('B')
-    #     h_fixed = match.group('H')
-        
-    #     data = HeteroData()
+    mini_batch_number = 1
+    schedulePattern = re.compile(fr'schedule.+_{mini_batch_number}.+H\d{{1,4}}.csv')
+    scheduleTravelPattern = re.compile(fr'schedule.+_{mini_batch_number}.+H\d{{1,4}}_travel.csv')
 
-    #     #mission nodes
-    #     mission_feats = []
-    #     for _, row in df_missions.iterrows():
-    #         w, l = df_pallet_types.get(row['TP_UDC'], (0, 0))
+    f_nodes_filename = MISSION_BATCH_DIR.replace('.csv', f'_{mini_batch_number}.csv')
+    f_edges_filename = MISSION_BATCH_TRAVEL_DIR.replace('.csv', f'_{mini_batch_number}.csv')
+    f_sched_filename = os.path.join(SCHEDULE_DIR, [f for f in os.listdir(SCHEDULE_DIR) if schedulePattern.match(f)][0])
+    f_sched_travel_filename = os.path.join(SCHEDULE_DIR, [f for f in os.listdir(SCHEDULE_DIR) if scheduleTravelPattern.match(f)][0])
 
-    #         #feature vector: pysical requirements of the task
-    #         mission_feats.append([
-    #             row['TO_X'], row['TO_Y'], row['TO_Z'], 
-    #             row['WEIGHT'], row['HEIGHT'], w, l
-    #         ])
-    #     data['mission'].x = torch.tensor(mission_feats, dtype=torch.float)
+    gnn_data_loader = GnnDataInstanceBuilder()
 
-    #     # --- 2. Forklift Nodes (Capabilities) ---
-    #     forklift_ids = sorted(df_forklifts.keys())
-    #     f_map = {fid: i for i, fid in enumerate(forklift_ids)}
-        
-    #     f_feats = [[s['speeds'][0], s['speeds'][1], s['speeds'][2]] for s in df_forklifts.values()]
-    #     data['forklift'].x = torch.tensor(f_feats, dtype=torch.float)
+    data = gnn_data_loader.load_and_process_data(f_nodes_filename,
+                                                UDC_TYPES_DIR,
+                                                FORK_LIFTS_DIR,
+                                                f_edges_filename,
+                                                f_sched_filename)
+    data.to(device)
 
-    #     # --- 3. Edge Logic: Compatibility & Constraint Matching ---
-    #     edge_index, edge_attr, y_label = [], [], []
+    print(f"\n--- mini-batch [{mini_batch_number}] Generated HeteroData Object ---")
+    print(data)
+    print(f"Global Context (Alpha, Beta, H): {data.u}")
+    print(f"Order Nodes: {data['order'].x.shape}")
+    print(f"Operator Nodes: {data['operator'].x.shape}")
+    print(f"Order-Order Edges (Travel Time): {data['order', 'to', 'order'].edge_attr.shape}")
+    print(f"Op-Order Edges (Processing Time): {data['operator', 'assign', 'order'].edge_attr.shape}")
 
-    #     for f_id, f_info in df_forklifts.items():
-    #         for o_idx, o_row in df_missions.iterrows():
-    #             w, l = df_pallet_types.get(o_row['TP_UDC'], (0, 0))
-                
-    #             # Retrieve the specific Skill Score for this Forklift + Pallet Type
-    #             # This handles the width/length dependency mentioned
-    #             skill_score = f_info['skill_map'].get((w, l), 0)
-                
-    #             # Only create an edge if the forklift is physically capable (Constraint)
-    #             # 1. Skill check (Is score > 0?)
-    #             # 2. Weight check (Forklift capacity)
-    #             # 3. Height check (Mast height)
-    #             if skill_score > 0 and f_info['max_weight'] >= o_row['WEIGHT']:
-    #                 f_idx = f_map[f_id]
-    #                 edge_index.append([f_idx, o_idx])
-                    
-    #                 # Pre-calculate the kinematic time based on specific forklift speeds
-    #                 k_time = calculate_3d_time(o_row, f_info['speeds'])
-                    
-    #                 # The GNN sees both the skill (quality) and time (cost)
-    #                 edge_attr.append([skill_score, k_time])
-                    
-    #                 # Label from the MIP solution
-    #                 is_assigned = 1.0 if (df_schedule[o_row['CD_MISSION']] == f_id) else 0.0
-    #                 y_label.append(is_assigned)
 
-    #     data['forklift', 'assigned_to', 'mission'].edge_index = torch.tensor(edge_index).t().long()
-    #     data['forklift', 'assigned_to', 'mission'].edge_attr = torch.tensor(edge_attr, dtype=torch.float)
-    #     data['forklift', 'assigned_to', 'mission'].y = torch.tensor(y_label, dtype=torch.float)
+    model = MultiCriteriaGNNModel(
+        metadata=data.metadata(),
+        hidden_dim=64,
+        num_layers=3,
+        heads=4
+    ).to(device)
 
-    #     return data     
+    #forward pass example
+    out = model(
+        data.x_dict, 
+        data.edge_index_dict, 
+        data.edge_attr_dict,
+        data.u
+    )
 
-        # u = torch.tensor([[h_fixed, alpha, beta]], dtype=torch.float)
-
-        # #node mapping (CD_MISSION -> graph idx)
-        # #ensure that '0' (the base) is included.
-        # unique_missions = sorted(df_nodes['CD_MISSION'].unique().tolist())
-        # if 0 not in unique_missions:
-        #     unique_missions.insert(0, 0) #prepend base at index 0
-            
-        # mission_to_idx = {m_id: i for i, m_id in enumerate(unique_missions)}
-        # num_nodes = len(unique_missions)
-        
-        # print(f"Graph has {num_nodes} nodes (including Base).")
-
-        # #node features (x)
-        # #feature vector: [From_X, From_Y, To_X, To_Y, Processing_Time, Is_Base]
-        # #we need to normalize coordinates to [0, 1] for the GNN to learn effectively.
-        
-        # #create a lookup for node attributes
-        # node_lookup = df_nodes.set_index('CD_MISSION')[['FROM_X', 'FROM_Y', 'FROM_Z', 'TO_X', 'TO_Y', 'TO_Z']].to_dict('index')
-        
-        # #fit Min/Max scaler on all coordinates
-        # all_coords = df_nodes[['FROM_X', 'FROM_Y', 'FROM_Z', 'TO_X', 'TO_Y', 'TO_Z']].values
-        # scaler = MinMaxScaler()
-        # scaler.fit(all_coords)
-        
-        # feature_list = []
-        
-        # for m_id in unique_missions:
-        #     if m_id == 0:
-        #         #base Features: assume Base is at (0,0) or derived from edge file
-        #         #for this script, we assume Base is at (0,0) and has 0 processing time
-        #         norm_coords = [0.0, 0.0, 0.0, 0.0] 
-        #         proc_time = 0.0
-        #         is_base = 1.0
-        #     else:
-        #         #node features
-        #         data = node_lookup[m_id]
-                
-        #         #normalize coordinates
-        #         raw_coords = [[data['FROM_X'], data['FROM_Y'], data['TO_X'], data['TO_Y']]]
-        #         n_c = scaler.transform(raw_coords)[0] #normalized [x1, y1, x2, y2]
-                
-        #         norm_coords = n_c.tolist()
-        #         proc_time = float(data['DIFF']) #'DIFF' seems to be processing time in your file
-        #         is_base = 0.0
-                
-        #     feature_list.append(norm_coords + [proc_time, is_base])
-            
-        # x = torch.tensor(feature_list, dtype=torch.float)
-
-        # # 4. Build Edges & Labels
-        # src_nodes = []
-        # dst_nodes = []
-        # edge_attrs = []
-        # edge_labels = []
-        
-        # # A. Identify "Positive" Edges (The ones taken in the schedule)
-        # # We use the schedule file to find pairs (Task -> Successor)
-        # positive_edges = set()
-        # for _, row in df_schedule.iterrows():
-        #     task = int(row['Task'])
-        #     succ = int(row['Successor'])
-            
-        #     # In your schedule, 'Task' is the current node, 'Successor' is the next.
-        #     # Check if successor is valid (sometimes it might be end of list)
-        #     if task in mission_to_idx and succ in mission_to_idx:
-        #         u_idx = mission_to_idx[task]
-        #         v_idx = mission_to_idx[succ]
-        #         positive_edges.add((u_idx, v_idx))
-                
-        #         # Note: Your schedule implies Task -> Successor. 
-        #         # You also need Base -> First Task.
-        #         # The 'travel' file is often better for this as it lists every hop explicitly.
-                
-        # # Alternative: Using the 'travel.csv' which explicitly lists "From_Node -> To_Node"
-        # df_optimal = pd.read_csv(schedule_travel_file)
-        # for _, row in df_optimal.iterrows():
-        #     u_node = int(row['From_Node'])
-        #     v_node = int(row['To_Node'])
-        #     if u_node in mission_to_idx and v_node in mission_to_idx:
-        #         positive_edges.add((mission_to_idx[u_node], mission_to_idx[v_node]))
-
-        # # B. Build the Full Graph (All possible edges from your distance file)
-        # # Normalize distances
-        # max_dist = df_edges['DISTANCE'].max()
-        
-        # for _, row in df_edges.iterrows():
-        #     m1, m2 = int(row['CD_MISSION_1']), int(row['CD_MISSION_2'])
-        #     dist = float(row['DISTANCE'])
-            
-        #     if m1 in mission_to_idx and m2 in mission_to_idx:
-        #         u_idx = mission_to_idx[m1]
-        #         v_idx = mission_to_idx[m2]
-                
-        #         src_nodes.append(u_idx)
-        #         dst_nodes.append(v_idx)
-                
-        #         # Feature: Normalized Distance
-        #         edge_attrs.append([dist / max_dist])
-                
-        #         # Label: 1.0 if this exact edge was used in the optimal schedule
-        #         lbl = 1.0 if (u_idx, v_idx) in positive_edges else 0.0
-        #         edge_labels.append(lbl)
-                
-        # edge_index = torch.tensor([src_nodes, dst_nodes], dtype=torch.long)
-        # edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
-        # y = torch.tensor(edge_labels, dtype=torch.float)
-
-        # #create Data Object for the gnn model
-        # data = HeteroData(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, u=u)
-        
-        return data
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
-
-mini_batch_number = 1
-schedulePattern = re.compile(fr'schedule.+_{mini_batch_number}.+H\d{{1,4}}.csv')
-scheduleTravelPattern = re.compile(fr'schedule.+_{mini_batch_number}.+H\d{{1,4}}_travel.csv')
-
-f_nodes_filename = MISSION_BATCH_DIR.replace('.csv', f'_{mini_batch_number}.csv')
-f_edges_filename = MISSION_BATCH_TRAVEL_DIR.replace('.csv', f'_{mini_batch_number}.csv')
-f_sched_filename = os.path.join(SCHEDULE_DIR, [f for f in os.listdir(SCHEDULE_DIR) if schedulePattern.match(f)][0])
-f_sched_travel_filename = os.path.join(SCHEDULE_DIR, [f for f in os.listdir(SCHEDULE_DIR) if scheduleTravelPattern.match(f)][0])
-
-gnn_data_loader = GnnDataLoader()
-# gnn_data = gnn_data_loader.build_constrained_gnn_data(f_nodes_filename,
-#                                                    f_edges_filename,
-#                                                    f_sched_filename, 
-#                                                    f_sched_travel_filename)
-
-data = gnn_data_loader.load_and_process_data(f_nodes_filename,
-                                            UDC_TYPES_DIR,
-                                            FORK_LIFTS_DIR,
-                                            f_edges_filename,
-                                            f_sched_filename)
-data.to(device)
-
-print(f"\n--- mini-batch [{mini_batch_number}] Generated HeteroData Object ---")
-print(data)
-print(f"Global Context (Alpha, Beta, H): {data.u}")
-print(f"Order Nodes: {data['order'].x.shape}")
-print(f"Operator Nodes: {data['operator'].x.shape}")
-print(f"Order-Order Edges (Travel Time): {data['order', 'to', 'order'].edge_attr.shape}")
-print(f"Op-Order Edges (Processing Time): {data['operator', 'assign', 'order'].edge_attr.shape}")
-
-# print(f"\n--- mini-batch [{mini_batch_number}] GNN Data Object Created ---")
-# print(gnn_data)
-# print(f"Nodes features shape: {gnn_data.x.shape}")
-# print(f"Edge index shape: {gnn_data.edge_index.shape}")
-# print(f"Labels shape: {gnn_data.y.shape}")
-
-model = MultiCriteriaGNNModel(
-    metadata=data.metadata(),
-    hidden_dim=64,
-    num_layers=3,
-    heads=4
-).to(device)
-
-#forward pass example
-out = model(
-    data.x_dict, 
-    data.edge_index_dict, 
-    data.edge_attr_dict,
-    data.u
-)
-
-print("Forward Pass Successful.")
-print(f"Activation Logits: {out['activation']}")
-print(f"Assignment Logits: {out['assignment']}")
-print(f"Sequence Logits:   {out['sequence']}")
+    print("Forward Pass Successful.")
+    print(f"Activation Probs: {out['activation']}")
+    print(f"Assignment Probs: {out['assignment']}")
+    print(f"Sequence Probs:   {out['sequence']}")
