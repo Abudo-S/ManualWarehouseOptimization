@@ -115,10 +115,10 @@ if __name__ == "__main__":
         for batch_idx, batch in enumerate(loader):
             batch = batch.to(device)
             
-            
             print(f"\n--- mini-batch [{batch_idx}] Generated HeteroData Object ---")
             print(batch)
             print(f"\nProcessing Batch {batch_idx} with {batch.num_graphs} graphs.")
+            
             #forward pass
             out = model(
                 batch.x_dict, 
@@ -138,7 +138,7 @@ if __name__ == "__main__":
             # loss.backward()
             # optimizer.step()
             
-            if batch_idx > 1: break #limit to 2 batches, just for demo
+            if batch_idx >= 1: break #limit to 2 batches, just for demo
 
 
 

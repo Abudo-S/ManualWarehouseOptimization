@@ -84,13 +84,14 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             Linear(hidden_dim, 1)
         )
 
-    def forward(self, x_dict, edge_index_dict, edge_attr_dict, u):
+    def forward(self, x_dict, edge_index_dict, edge_attr_dict, u, batch_dict=None):
         """
         The model performs message passing and then applies three separate heads for different classification tasks.
         x_dict: Node features {'order': [N, 7], 'operator': [M, 4]}
         edge_index_dict: Connectivity
         edge_attr_dict: Edge Features (Time) {'order__to__order': [E, 1], ...}
         u: Global params [Batch, 3]
+        batch_dict: optional batching info for nodes
         Returns:
             Dict with keys:
             'activation': [num_ops, 1] logits for operator activation
@@ -116,14 +117,23 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             #activation & residual could be added here
             x_dict = {key: x.relu() for key, x in x_dict.items()}
 
+        #if a single HeteroData object is passed (not a batch), batch_dict should be tensor of zeros
+        if batch_dict is None:
+            batch_dict = {
+                key: torch.zeros(x.size(0), dtype=torch.long, device=x.device) 
+                for key, x in x_dict.items()
+            }
+
         #global context
         #u is [1, 3] (single graph batch). Broadcast to nodes if necessary or just concat.
         #an efficient way is to expand u to match node count during prediction.
         
         #head 1: activation (operator nodes)
         #expand u: [1, 3] -> [num_ops, 3]
-        num_ops = x_dict['operator'].size(0)
-        u_ops = u.expand(num_ops, -1)
+        op_batch = batch_dict['operator']
+        u_ops = u[op_batch] #match batch size for multiple graphs, shape: [num_ops, 3]
+        #num_ops = x_dict['operator'].size(0)
+        #u_ops = u.expand(num_ops, -1)
         
         #concat: [op_emb, global]
         op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
@@ -140,8 +150,10 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         edge_attr = edge_attr_dict[('operator', 'assign', 'order')] #processing time
         
         #expand global u to match number of edges
-        num_edges = src_idx.size(0)
-        u_edges = u.expand(num_edges, -1)
+        # num_edges = src_idx.size(0)
+        # u_edges = u.expand(num_edges, -1)
+        edge_batch_indices = op_batch[src_idx] 
+        u_edges = u[edge_batch_indices] #match batch size for multiple graphs, shape: [num_edges, 3]
         
         #concat: [op, order, global, time]
         assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr], dim=1)
@@ -156,8 +168,12 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         ord_emb_j = x_dict['order'][dst_idx]
         edge_attr = edge_attr_dict[('order', 'to', 'order')] #travel Time
         
-        num_edges = src_idx.size(0)
-        u_edges = u.expand(num_edges, -1)
+        # num_edges = src_idx.size(0)
+        # u_edges = u.expand(num_edges, -1)
+        ord_batch = batch_dict['order']
+        edge_batch_indices = ord_batch[src_idx] # use 'order' node batch
+        u_edges = u[edge_batch_indices]
+
         
         seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr], dim=1)
 
