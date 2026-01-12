@@ -2,6 +2,10 @@ import torch
 import torch.nn.functional as F
 from torch.nn import Linear, Sequential, ReLU, BatchNorm1d
 from torch_geometric.nn import HeteroConv, GATv2Conv, to_hetero
+import os
+
+SAVE_MODEL_PATH = "checkpoints/gnn_model_weights.pth"
+SAVE_MODEL_IN_TRAINING_PATH = "checkpoints/gnn_checkpoint_epoch_idx.pth" #replace idx with epoch number when saving
 
 class MultiCriteriaGNNModel(torch.nn.Module):
     def __init__(self, metadata, hidden_dim=64, num_layers=2, heads=4):
@@ -186,6 +190,63 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             'sequence': out_seq #[num_seq_edges, 1]
         }
     
+    def save_model(self, save_path=SAVE_MODEL_PATH):
+        #create checkpoints directory if it doesn't exist
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        #save model weights
+        torch.save(self.state_dict(), save_path)
+
+    def load_model(self, save_path=SAVE_MODEL_PATH):
+        #load the model weights
+        self.load_state_dict(torch.load(save_path))
+        self.eval()
+
+    def save_model_in_training(self,
+                               optimizer, 
+                               current_epoch, 
+                               current_loss, 
+                               save_weights_path=SAVE_MODEL_PATH,
+                               save_path=SAVE_MODEL_IN_TRAINING_PATH):
+        #save weights
+        self.save_model(save_weights_path)
+
+        checkpoint = {
+            'epoch': current_epoch,
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': current_loss,
+            #save hyperparameters so they don't get forgetten them
+            'hyperparameters': {
+                'hidden_dim': self.hidden_dim,
+                'num_layers': self.num_layers,
+                'heads': self.heads
+            }
+        }
+
+        #save training checkpoint
+        torch.save(checkpoint, save_path.replace("idx", str(current_epoch)))
+
+    def load_model_in_training(self,
+                               current_epoch,
+                               optimizer,
+                               save_weights_path=SAVE_MODEL_PATH,
+                               save_path=SAVE_MODEL_IN_TRAINING_PATH):
+        #load weights
+        self.load_model(save_weights_path)
+
+        #load training checkpoint
+        checkpoint = torch.load(save_path.replace("idx", str(current_epoch)))
+
+        #retrieve states
+        self.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch']
+        loss = checkpoint['loss']
+
+        self.train()
+
+        return optimizer, start_epoch, loss
 
 
 
