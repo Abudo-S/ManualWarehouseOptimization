@@ -24,10 +24,11 @@ class ParameterDataLoader:
         self.Big_M = Big_M #can be used to set a default high value for unknown/unwanted parameters (so they will be neglected by the optimization model)
 
         #self.fork_lifts_df.columns.str.strip() #remove leading and trailing spaces from column names
-        self.fork_lifts_df['SPEED'].fillna(300, inplace=True)
+        self.fork_lifts_df['SPEED'] = self.fork_lifts_df['SPEED'].fillna(300)
         self.mean_fork_lift_speed = self.fork_lifts_df['SPEED'].mean()
 
-        self.fork_lifts_df[['UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']].fillna(30, inplace=True)
+        cols = ['UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']
+        self.fork_lifts_df[cols] = self.fork_lifts_df[cols].fillna(30)
         
 
     # def get_data_portal(self, model:pyo.AbstractModel) -> pyo.DataPortal:
