@@ -51,7 +51,7 @@ class GnnDataInstanceBuilder:
         #parse global parameters
         filename = os.path.basename(schedule_file_path)
         alpha, beta, h_fixed = self.parse_filename_params(filename)
-        print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
+        #print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
 
         #load dataframe
         df_missions = pd.read_csv(node_file_path)
@@ -319,4 +319,4 @@ if __name__ == "__main__":
     print("Forward Pass Successful.")
     print(f"Activation Probs: {out['activation']}")
     print(f"Assignment Probs: {out['assignment']}")
-    print(f"Sequence Probs:   {out['sequence']}")
+    print(f"Sequence Probs: {out['sequence']}")
