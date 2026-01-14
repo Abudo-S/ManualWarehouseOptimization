@@ -82,7 +82,12 @@ class GnnDataInstanceBuilder:
         missions_features = [
             'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'FROM_X', 'FROM_Y', 'FROM_Z','TO_X', 'TO_Y', 'TO_Z'
         ]
-        mission_feats_raw = df_missions[missions_features].fillna(0)
+        
+        for missions_feature in missions_features:
+            if df_missions[missions_feature].dtype == 'object':  #only apply to string/object columns
+                df_missions[missions_feature] = df_missions[missions_feature].str.replace(',', '', regex=False)
+
+        mission_feats_raw = df_missions[missions_features].astype(float).fillna(0)
         missions_scaled = scaler.fit_transform(mission_feats_raw)
         x_missions = torch.tensor(missions_scaled, dtype=torch.float)
 
