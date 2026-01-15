@@ -1,10 +1,12 @@
 import pandas as pd
 import pyomo.environ as pyo
+import random
 
 #Maximum allowed difference between fork dimensions and pallet type dimensions to consider the fork lift suitable for the pallet type.
 FORK_DIMENSIONS_EXCEEDING_THRESHOLD = 0.20 #percentage in fork length/width.
 ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION = 10 #minutes
 ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION = 10 #minutes
+ESTIMATED_POSSIBLE_DELAYS = [5, 10, 15, 20] #subsequent delays that can be added to travel/processing times to simulate uncertainties.
 
 class ParameterDataLoader:
 
@@ -54,7 +56,7 @@ class ParameterDataLoader:
                                 (mission['DISTANCE']/fork_lift['SPEED_WITH_LOAD']) + 
                                 (mission['TO_Z']/fork_lift['UP_SPEED_WITH_LOAD']) +
                                 (mission['TO_Z']/fork_lift['DOWN_SPEED']) +
-                                ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION
+                                random.choice(ESTIMATED_POSSIBLE_DELAYS)
                                 for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for mission_idx, mission in self.mission_batch_df.iterrows()}
 
     def get_mission_travel_times(self) -> dict:
@@ -62,10 +64,10 @@ class ParameterDataLoader:
             Returns a dictionary mapping each sequence of 2 mission codes to their travel times.
             [(mission_code_1, mission_code_2)]: travel_time + estimated_delay
         '''
-        cd_missions = self.mission_batch_with_base_df['CD_MISSION'].tolist()
+        cd_missions = self.mission_batch_with_base_df['CD_MISSION'].astype(int).tolist()
         travel_distances = self.mission_batch_travel_df.set_index(['CD_MISSION_1', 'CD_MISSION_2'])['DISTANCE'].to_dict()
 
-        return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION 
+        return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + random.choice(ESTIMATED_POSSIBLE_DELAYS) 
                 for k, distance in travel_distances.items()
                 if k[0] in cd_missions and k[1] in cd_missions}
     
