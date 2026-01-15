@@ -8,7 +8,7 @@ SAVE_MODEL_PATH = "checkpoints/gnn_model_weights.pth"
 SAVE_MODEL_IN_TRAINING_PATH = "checkpoints/gnn_checkpoint_epoch_idx.pth" #replace idx with epoch number when saving
 
 class MultiCriteriaGNNModel(torch.nn.Module):
-    def __init__(self, metadata, hidden_dim=64, num_layers=2, heads=4):
+    def __init__(self, metadata, hidden_dim=64, num_layers=3, heads=4):
         '''
         metadata: Tuple of (node_types, edge_types) from the heterogeneous graph
         hidden_dim: Dimension of hidden embeddings

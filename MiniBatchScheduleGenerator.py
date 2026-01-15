@@ -269,6 +269,8 @@ class MiniBatchScheduleGenerator:
             # mission_batch_df_scaled = pd.merge(mission_batch_df_scaled, udc_types_df, on='TP_UDC')
             # mission_batch_df_scaled.drop(columns=['TP_UDC'], inplace=True)
 
+            mission_batch_df_scaled['CD_MISSION'] = mission_batch_df_scaled['CD_MISSION'].str.replace(",", "", regex=False).astype(int)
+
             mission_batch_df_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
             mission_batch_df_scaled['TP_UDC'].fillna(udc_types_df.iloc[0]['TP_UDC'], inplace=True) #the udc_type base mission will remain 0
             mission_batch_df_with_base.head()
@@ -276,7 +278,6 @@ class MiniBatchScheduleGenerator:
             #remove pallet types not present in the mission batch
             udc_types_in_mission_batch = mission_batch_df_scaled['TP_UDC'].unique().tolist()
             udc_types_df = udc_types_df[udc_types_df['TP_UDC'].isin(udc_types_in_mission_batch)]
-
 
             parameter_data_loader = ParameterDataLoader(
                 mission_batch_df_scaled,
@@ -290,7 +291,7 @@ class MiniBatchScheduleGenerator:
             missions = mission_batch_df_scaled['CD_MISSION'].astype(int).to_list()
             operators = fork_lifts_df['OID'].astype(int).to_list()
             pallet_types = udc_types_df['TP_UDC'].astype(int).to_list()
-            missions_with_base = mission_batch_df_with_base['CD_MISSION'].to_list()
+            missions_with_base = mission_batch_df_with_base['CD_MISSION'].astype(int).to_list()
 
             travel_times = parameter_data_loader.get_mission_travel_times()
             processing_times = parameter_data_loader.get_mission_processing_times()
@@ -337,4 +338,4 @@ class MiniBatchScheduleGenerator:
             self.save_schedule_steps(instance, batch_name, h_fixed)
 
 if __name__ == "__main__":
-    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=90, use_h_fixed=False)
+    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=92, use_h_fixed=False)
