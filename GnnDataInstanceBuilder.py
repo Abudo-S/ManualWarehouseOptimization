@@ -51,7 +51,7 @@ class GnnDataInstanceBuilder:
         #parse global parameters
         filename = os.path.basename(schedule_file_path)
         alpha, beta, h_fixed = self.parse_filename_params(filename)
-        #print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
+        print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
 
         #load dataframe
         df_missions = pd.read_csv(node_file_path)
@@ -64,7 +64,7 @@ class GnnDataInstanceBuilder:
         df_missions = df_missions.merge(df_pallet_types[['TP_UDC', 'WIDTH', 'LENGTH']], on='TP_UDC', how='left')
         
         #node idx mappings
-        mission_ids = df_missions['CD_MISSION'].unique()
+        mission_ids = df_missions['CD_MISSION'].str.replace(",", "", regex=False).astype(int).unique()
         order_map = {id: i for i, id in enumerate(mission_ids)}
         num_mission = len(mission_ids)
         
@@ -85,7 +85,7 @@ class GnnDataInstanceBuilder:
 
         for missions_feature in missions_features:
             if df_missions[missions_feature].dtype == 'object' or df_missions[missions_feature].dtype == 'string':  #only apply to string/object columns
-                df_missions[missions_feature] = df_missions[missions_feature].str.replace(',', '', regex=False)
+                df_missions[missions_feature] = df_missions[missions_feature].str.replace(",", "", regex=False).astype(int)
 
         mission_feats_raw = df_missions[missions_features].astype(float).fillna(0)
         missions_scaled = scaler.fit_transform(mission_feats_raw)
@@ -126,7 +126,8 @@ class GnnDataInstanceBuilder:
         df_unscaled_features = df_missions.drop(columns=features_to_scale)
 
         mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
-
+        mission_batch_df_scaled['CD_MISSION'] = df_missions['CD_MISSION'].str.replace(',', '', regex=False).astype(int)
+        
         ops_scaled = scaler.fit_transform(op_feats_raw)
         x_ops = torch.tensor(ops_scaled, dtype=torch.float)
 
