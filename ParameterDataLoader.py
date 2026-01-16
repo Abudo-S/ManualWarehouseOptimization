@@ -6,7 +6,7 @@ import random
 FORK_DIMENSIONS_EXCEEDING_THRESHOLD = 0.20 #percentage in fork length/width.
 ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION = 10 #minutes
 ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION = 10 #minutes
-ESTIMATED_POSSIBLE_DELAYS = [5, 10, 15, 20] #subsequent delays that can be added to travel/processing times to simulate uncertainties.
+ESTIMATED_POSSIBLE_DELAYS = [5, 10, 15, 20] #substitutes fixed delays, it that can be added to travel/processing times to simulate uncertainties.
 
 class ParameterDataLoader:
 
@@ -56,7 +56,7 @@ class ParameterDataLoader:
                                 (mission['DISTANCE']/fork_lift['SPEED_WITH_LOAD']) + 
                                 (mission['TO_Z']/fork_lift['UP_SPEED_WITH_LOAD']) +
                                 (mission['TO_Z']/fork_lift['DOWN_SPEED']) +
-                                random.choice(ESTIMATED_POSSIBLE_DELAYS)
+                                ESTIMATED_PROCESSING_TIME_DELAY_PER_MISSION #random.choice(ESTIMATED_POSSIBLE_DELAYS)
                                 for forlift_idx, fork_lift in self.fork_lifts_df.iterrows() for mission_idx, mission in self.mission_batch_df.iterrows()}
 
     def get_mission_travel_times(self) -> dict:
@@ -67,7 +67,7 @@ class ParameterDataLoader:
         cd_missions = self.mission_batch_with_base_df['CD_MISSION'].astype(int).tolist()
         travel_distances = self.mission_batch_travel_df.set_index(['CD_MISSION_1', 'CD_MISSION_2'])['DISTANCE'].to_dict()
 
-        return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + random.choice(ESTIMATED_POSSIBLE_DELAYS) 
+        return {(int(k[0]), int(k[1])): (distance / self.mean_fork_lift_speed) + ESTIMATED_TRAVEL_TIME_DELAY_PER_MISSION #random.choice(ESTIMATED_POSSIBLE_DELAYS) 
                 for k, distance in travel_distances.items()
                 if k[0] in cd_missions and k[1] in cd_missions}
     
