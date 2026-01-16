@@ -51,7 +51,7 @@ class GnnDataInstanceBuilder:
         #parse global parameters
         filename = os.path.basename(schedule_file_path)
         alpha, beta, h_fixed = self.parse_filename_params(filename)
-        print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
+        #print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
 
         #load dataframe
         df_missions = pd.read_csv(node_file_path)
@@ -85,9 +85,9 @@ class GnnDataInstanceBuilder:
 
         for missions_feature in missions_features:
             if df_missions[missions_feature].dtype == 'object' or df_missions[missions_feature].dtype == 'string':  #only apply to string/object columns
-                df_missions[missions_feature] = df_missions[missions_feature].str.replace(",", "", regex=False).astype(int)
+                df_missions[missions_feature] = df_missions[missions_feature].str.replace(",", "", regex=False)
 
-        mission_feats_raw = df_missions[missions_features].astype(float).fillna(0)
+        mission_feats_raw = df_missions[missions_features].fillna(0).astype(float)
         missions_scaled = scaler.fit_transform(mission_feats_raw)
         x_missions = torch.tensor(missions_scaled, dtype=torch.float)
 
