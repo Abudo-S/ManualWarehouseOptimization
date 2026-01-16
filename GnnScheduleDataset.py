@@ -36,7 +36,7 @@ class GnnScheduleDataset(Dataset):
         #discover all schedule files
         #pattern: schedule..._1_A...B...H...0.csv
         search_pattern = os.path.join(schedule_dir, "schedule*0.csv")
-        all_schedules = glob.glob(search_pattern)
+        all_schedules = sorted(glob.glob(search_pattern))
         
         self.items = []
         
