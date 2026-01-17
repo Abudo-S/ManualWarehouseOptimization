@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import random_split
+from torch_geometric.loader import DataLoader
 from collections import defaultdict
 from tqdm import tqdm
 import numpy as np
@@ -81,7 +82,7 @@ class ScheduleEvaluator:
         total_loss = (beta * loss_act) + (alpha * (loss_assign + loss_seq))
         
         return total_loss, loss_act.item(), loss_assign.item(), loss_seq.item()
-
+    
     def evaluate(self, use_train_set=False):
         '''
         evaluates the model on the training/test dataset and returns average loss. 
@@ -92,12 +93,12 @@ class ScheduleEvaluator:
 
         self.model.eval()
         data_loader = DataLoader(schedule_dataset, batch_size=self.batch_size, shuffle=False)
-        total_loss = 0.0
+        total_epoch_loss = 0.0
         act_loss = 0.0
         assign_loss = 0.0
         seq_loss = 0.0
 
-        for batch_idx, batch in tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Evaluating on {'training' if use_train_set else 'test'} set..."):
+        for batch_idx, batch in tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Evaluating on {'training' if use_train_set else 'test'} set"):
             batch = batch.to(self.device)
             
             #construct batch_dict
@@ -121,7 +122,7 @@ class ScheduleEvaluator:
             assign_loss += l_assign
             seq_loss += l_seq
 
-        average_total_loss = total_loss / len(schedule_dataset)
+        average_total_loss = total_epoch_loss / len(schedule_dataset)
         average_act_loss = act_loss / len(schedule_dataset)
         average_assign_loss = assign_loss / len(schedule_dataset)
         average_seq_loss = seq_loss / len(schedule_dataset)
