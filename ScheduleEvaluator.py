@@ -57,7 +57,15 @@ class ScheduleEvaluator:
     def weighted_loss(self, predictions, ground_truth, u_batch):
         """
         computes weighted BCE loss for activation, assignment, and sequence heads.
-        total Loss = Beta * act_loss + alpha * (assign_loss + seq_loss)
+        total Loss = beta * act_loss + alpha * (assign_loss + seq_loss)
+
+        We should not artificially force the final weighted loss to be between 0 and 1 
+        (e.g., by passing it through a sigmoid or clamping it).
+        Doing so would distort or kill the gradients, making the training impossible.
+
+        However, we must control the magnitude of the weights ($\alpha, \beta$) 
+        to prevent the loss from becoming too large (exploding gradients) 
+        or too small (vanishing gradients).
         """
         pred_act = predictions['activation']
         pred_assign = predictions['assignment']
@@ -82,6 +90,10 @@ class ScheduleEvaluator:
         #or rely on the optimizer (Adam) to handle scaling.
         total_loss = (beta * loss_act) + (alpha * (loss_assign + loss_seq))
         
+        #avoid division by zero
+        #sum_weights = alpha + beta + 1e-6
+        #normalized_loss = total_loss / sum_weights
+
         return total_loss, loss_act.item(), loss_assign.item(), loss_seq.item()
 
     def calculate_metrics(self, preds, batch):
