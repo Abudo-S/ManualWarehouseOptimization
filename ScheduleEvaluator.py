@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from sklearn.metrics import confusion_matrix, accuracy_score
 import torch.nn.functional as F
 from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader
@@ -82,11 +83,67 @@ class ScheduleEvaluator:
         total_loss = (beta * loss_act) + (alpha * (loss_assign + loss_seq))
         
         return total_loss, loss_act.item(), loss_assign.item(), loss_seq.item()
-    
+
+    def calculate_metrics(self, preds, batch):
+        """
+        Calculates accuracy and confusion matrix for Activation, Assignment, and Sequence.
+        
+        Args:
+            preds (dict): Output from model(batch) containing 'activation', 'assignment', 'sequence'
+                        These are ALREADY probabilities (0-1) due to sigmoid in model.
+            batch (HeteroData): The batch containing ground truth labels.
+            
+        Returns:
+            dict: Contains accuracy and confusion matrix for each head.
+        """
+        metrics = {}
+        
+        #threshold for binary classification like logistic regression after sigmoid
+        threshold = 0.5
+
+        #activation head (operator nodes)
+        if 'activation' in preds:
+            #preds shape: [num_operators, 1]
+            y_prob = preds['activation'].detach().cpu().numpy()
+            y_pred = (y_prob > threshold).astype(int).flatten()
+            
+            #operator ground truth: batch['operator'].y
+            y_true = batch['operator'].y.detach().cpu().numpy().flatten()
+                
+            metrics['act_acc'] = accuracy_score(y_true, y_pred)
+            metrics['act_cm'] = confusion_matrix(y_true, y_pred, labels=[0, 1])
+
+        #assignment head (operator -> order edges)
+        if 'assignment' in preds:
+            #preds shape: [num_assign_edges, 1]
+            y_prob = preds['assignment'].detach().cpu().numpy()
+            y_pred = (y_prob > threshold).astype(int).flatten()
+            
+            #assignment ground truth: ['operator', 'assign', 'order'].y
+            y_true = batch['operator', 'assign', 'order'].y.detach().cpu().numpy().flatten()
+
+            metrics['assign_acc'] = accuracy_score(y_true, y_pred)
+            metrics['assign_cm'] = confusion_matrix(y_true, y_pred, labels=[0, 1])
+
+        #sequence head (order -> order edges)
+        if 'sequence' in preds:
+            #preds shape: [num_seq_edges, 1]
+            y_prob = preds['sequence'].detach().cpu().numpy()
+            y_pred = (y_prob > threshold).astype(int).flatten()
+
+            #sequence ground truth: ['order', 'to', 'order'].y
+            y_true = batch['order', 'to', 'order'].y.detach().cpu().numpy().flatten()
+
+            metrics['seq_acc'] = accuracy_score(y_true, y_pred)
+            metrics['seq_cm'] = confusion_matrix(y_true, y_pred, labels=[0, 1])
+
+        return metrics
+
+
     def evaluate(self, use_train_set=False):
         '''
         evaluates the model on the training/test dataset and returns average loss. 
-        use_train_set: if True, trains and evaluates on training set, else on test set.
+        use_train_set: if true, trains and evaluates on training set, else on test set.
         '''
 
         schedule_dataset = self.schedule_train_dataset if use_train_set else self.schedule_test_dataset
@@ -94,37 +151,43 @@ class ScheduleEvaluator:
         self.model.eval()
         data_loader = DataLoader(schedule_dataset, batch_size=self.batch_size, shuffle=False)
         total_epoch_loss = 0.0
+        total_epoch_accuracy = 0.0
         act_loss = 0.0
         assign_loss = 0.0
         seq_loss = 0.0
 
-        for batch_idx, batch in tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Evaluating on {'training' if use_train_set else 'test'} set"):
-            batch = batch.to(self.device)
-            
-            #construct batch_dict
-            batch_dict_arg = {
-                'operator': batch['operator'].batch,
-                'order': batch['order'].batch
-            }
-            
-            #forward pass
-            preds = self.model(
-                batch.x_dict, 
-                batch.edge_index_dict, 
-                batch.edge_attr_dict,
-                batch.u,
-                batch_dict=batch_dict_arg
-            )
-            
-            loss, l_act, l_assign, l_seq = self.weighted_loss(preds, batch, batch.u)
-            total_epoch_loss += loss.item()
-            act_loss += l_act
-            assign_loss += l_assign
-            seq_loss += l_seq
+        with torch.no_grad():
+            for batch_idx, batch in tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Evaluating on {'training' if use_train_set else 'test'} set"):
+                batch = batch.to(self.device)
+                
+                #construct batch_dict
+                batch_dict_arg = {
+                    'operator': batch['operator'].batch,
+                    'order': batch['order'].batch
+                }
+                
+                #forward pass
+                preds = self.model(
+                    batch.x_dict, 
+                    batch.edge_index_dict, 
+                    batch.edge_attr_dict,
+                    batch.u,
+                    batch_dict=batch_dict_arg
+                )
+                
+                loss, l_act, l_assign, l_seq = self.weighted_loss(preds, batch, batch.u)
+                measurements = self.calculate_metrics(preds, batch)
+                total_epoch_loss += loss.item()
+                total_epoch_accuracy += sum([measurements['act_acc'], measurements['assign_acc'], measurements['seq_acc']]) / 3.0
 
-        average_total_loss = total_epoch_loss / len(schedule_dataset)
-        average_act_loss = act_loss / len(schedule_dataset)
-        average_assign_loss = assign_loss / len(schedule_dataset)
-        average_seq_loss = seq_loss / len(schedule_dataset)
+                act_loss += l_act
+                assign_loss += l_assign
+                seq_loss += l_seq
 
-        return average_total_loss, average_act_loss, average_assign_loss, average_seq_loss
+            average_total_loss = total_epoch_loss / len(data_loader)
+            average_total_accuracy = total_epoch_accuracy / len(data_loader)
+            average_act_loss = act_loss / len(data_loader)
+            average_assign_loss = assign_loss / len(data_loader)
+            average_seq_loss = seq_loss / len(data_loader)
+
+            return average_total_loss, average_total_accuracy, average_act_loss, average_assign_loss, average_seq_loss
