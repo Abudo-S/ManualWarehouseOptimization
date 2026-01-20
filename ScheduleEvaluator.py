@@ -65,7 +65,7 @@ class ScheduleEvaluator:
 
         However, we must control the magnitude of the weights ($\alpha, \beta$) 
         to prevent the loss from becoming too large (exploding gradients) 
-        or too small (vanishing gradients).
+        or too small (vanishing gradients). They got normalized in the data building stage.
         """
         pred_act = predictions['activation']
         pred_assign = predictions['assignment']
@@ -81,7 +81,7 @@ class ScheduleEvaluator:
         loss_assign = F.binary_cross_entropy(pred_assign, true_assign)
         loss_seq = F.binary_cross_entropy(pred_seq, true_seq)
         
-        #extract alpha/beta (Mmean over batch)
+        #extract alpha/beta (mean over batch)
         alpha = u_batch[:, 0].mean()
         beta = u_batch[:, 1].mean()
         

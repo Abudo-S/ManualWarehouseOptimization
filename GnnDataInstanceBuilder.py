@@ -157,6 +157,10 @@ class GnnDataInstanceBuilder:
         data['order'].global_id = torch.tensor(mission_ids, dtype=torch.long)
         data['operator'].global_id = torch.tensor(op_ids, dtype=torch.long)
 
+        #normalize alpha and beta to avoid gradient numerical instability
+        alpha = alpha / (alpha + beta)
+        beta = beta / (alpha + beta)
+
         #global state vector (u) for Meta-Layer
         #[Alpha, Beta, H_fixed] is stored as a global graph feature
         data.u = torch.tensor([[alpha, beta, h_fixed]], dtype=torch.float)
