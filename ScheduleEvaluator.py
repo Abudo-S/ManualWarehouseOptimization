@@ -164,9 +164,14 @@ class ScheduleEvaluator:
         data_loader = DataLoader(schedule_dataset, batch_size=self.batch_size, shuffle=False)
         total_epoch_loss = 0.0
         total_epoch_accuracy = 0.0
+
+        #single heads performance
         act_loss = 0.0
         assign_loss = 0.0
         seq_loss = 0.0
+        act_accuracy = 0.0
+        assign_accuracy = 0.0
+        seq_accuracy = 0.0
 
         with torch.no_grad():
             for batch_idx, batch in tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Evaluating on {'training' if use_train_set else 'test'} set"):
@@ -192,14 +197,35 @@ class ScheduleEvaluator:
                 total_epoch_loss += loss.item()
                 total_epoch_accuracy += sum([measurements['act_acc'], measurements['assign_acc'], measurements['seq_acc']]) / 3.0
 
+                #accumulate single head losses
                 act_loss += l_act
                 assign_loss += l_assign
                 seq_loss += l_seq
 
+                #accumulate single head accuracies
+                act_accuracy += measurements['act_acc']
+                assign_accuracy += measurements['assign_acc']
+                seq_accuracy += measurements['seq_acc']
+            
+            #compute average losses
             average_total_loss = total_epoch_loss / len(data_loader)
-            average_total_accuracy = total_epoch_accuracy / len(data_loader)
             average_act_loss = act_loss / len(data_loader)
             average_assign_loss = assign_loss / len(data_loader)
             average_seq_loss = seq_loss / len(data_loader)
 
-            return average_total_loss, average_total_accuracy, average_act_loss, average_assign_loss, average_seq_loss
+            #compute average accuracies
+            average_total_accuracy = total_epoch_accuracy / len(data_loader)
+            average_act_accuracy = act_accuracy / len(data_loader)
+            average_assign_accuracy = assign_accuracy / len(data_loader)
+            average_seq_accuracy = seq_accuracy / len(data_loader)
+
+            return {
+                'total_loss': average_total_loss,
+                'act_loss': average_act_loss,
+                'assign_loss': average_assign_loss,
+                'seq_loss': average_seq_loss,
+                'total_accuracy': average_total_accuracy,
+                'act_accuracy': average_act_accuracy,
+                'assign_accuracy': average_assign_accuracy,
+                'seq_accuracy': average_seq_accuracy
+            }
