@@ -151,6 +151,32 @@ class ScheduleEvaluator:
 
         return metrics
 
+    def calculate_f1_metrics(self, cm):
+        """
+        Calculates Precision, Recall, and F1 from a 2x2 confusion matrix.
+        cm format: [[TN, FP], [FN, TP]]
+        """
+        tn, fp, fn, tp = cm.ravel()
+        
+        #precision: TP / (TP + FP)
+        #if TP+FP is 0 (no positive predictions), precision is undefined (we use 0.0 instead)
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        
+        #recall: TP / (TP + FN)
+        #if TP+FN is 0 (no actual positives), recall is undefined (we use 0.0 instead)
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        
+        #f1 score: 2 * (P * R) / (P + R)
+        if (precision + recall) > 0:
+            f1 = 2 * (precision * recall) / (precision + recall)
+        else:
+            f1 = 0.0
+        
+        #support: total actual positives (TP + FN)
+        support = tp + fn
+
+        return precision, recall, f1, support
+
 
     def evaluate(self, use_train_set=False):
         '''
@@ -171,7 +197,10 @@ class ScheduleEvaluator:
         seq_loss = 0.0
         act_accuracy = 0.0
         assign_accuracy = 0.0
-        seq_accuracy = 0.0
+        seq_accuracy = 0.0     
+        act_cm = np.zeros((2, 2), dtype=int)
+        assign_cm = np.zeros((2, 2), dtype=int)
+        seq_cm = np.zeros((2, 2), dtype=int)
 
         with torch.no_grad():
             for batch_idx, batch in tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Evaluating on {'training' if use_train_set else 'test'} set"):
@@ -196,7 +225,7 @@ class ScheduleEvaluator:
                 measurements = self.calculate_metrics(preds, batch)
                 total_epoch_loss += loss.item()
                 total_epoch_accuracy += sum([measurements['act_acc'], measurements['assign_acc'], measurements['seq_acc']]) / 3.0
-
+    
                 #accumulate single head losses
                 act_loss += l_act
                 assign_loss += l_assign
@@ -206,7 +235,12 @@ class ScheduleEvaluator:
                 act_accuracy += measurements['act_acc']
                 assign_accuracy += measurements['assign_acc']
                 seq_accuracy += measurements['seq_acc']
-            
+
+                #accumulate confusion matrices
+                act_cm += measurements['act_cm']
+                assign_cm += measurements['assign_cm']
+                seq_cm += measurements['seq_cm']
+
             #compute average losses
             average_total_loss = total_epoch_loss / len(data_loader)
             average_act_loss = act_loss / len(data_loader)
@@ -219,6 +253,11 @@ class ScheduleEvaluator:
             average_assign_accuracy = assign_accuracy / len(data_loader)
             average_seq_accuracy = seq_accuracy / len(data_loader)
 
+            #compute confusion matrix
+            total_cm = act_cm + assign_cm + seq_cm
+            row_sums = total_cm.sum(axis=1, keepdims=True)
+            total_normalized_cm = total_cm / row_sums 
+
             return {
                 'total_loss': average_total_loss,
                 'act_loss': average_act_loss,
@@ -227,5 +266,9 @@ class ScheduleEvaluator:
                 'total_accuracy': average_total_accuracy,
                 'act_accuracy': average_act_accuracy,
                 'assign_accuracy': average_assign_accuracy,
-                'seq_accuracy': average_seq_accuracy
+                'seq_accuracy': average_seq_accuracy,
+                'act_cm': act_cm,
+                'assign_cm': assign_cm,
+                'seq_cm': seq_cm,
+                'total_cm': total_cm
             }
