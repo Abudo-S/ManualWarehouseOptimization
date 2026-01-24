@@ -339,4 +339,4 @@ class MiniBatchScheduleGenerator:
             self.save_schedule_steps(instance, batch_name, h_fixed)
 
 if __name__ == "__main__":
-    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=92, use_h_fixed=False)
+    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=800, start_n=93, use_h_fixed=False)
