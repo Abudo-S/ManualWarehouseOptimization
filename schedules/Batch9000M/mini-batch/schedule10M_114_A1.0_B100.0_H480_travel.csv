@@ -1,0 +1,7 @@
+Operator_ID,Sequence_Rank,From_Node,To_Node,Activity_Type,Travel_Time,Start_Service,Finish_Service,Processing_Time
+1,1,0,3883564,Service,11.121855247184897,0.0,10.0,10.0
+1,2,3883564,3876638,Service,10.0,20.0,30.5,10.5
+1,3,3876638,3883512,Service,10.0,40.5,50.5,10.0
+1,4,3883512,3883527,Service,10.0,60.5,70.5,10.0
+1,5,3883527,3883592,Service,10.0,80.5,90.5,10.0
+1,6,3883592,0,Return to Base,11.121855247184897,,,
