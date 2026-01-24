@@ -14,13 +14,14 @@ ALPHA = 1.0 #makespan weight
 BETA = 100.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
-MISSION_BATCH_DIR = "./datasets/mini-batch/Batch10M_distanced.csv"
+LARGE_SCALE_BATCH_NAME = "Batch9000M"
+MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
-MISSION_BATCH_TRAVEL_DIR = "./datasets/mini-batch/Batch10M_travel_distanced.csv"
+MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
 FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
-SCHEDULE_DIR = "./schedules/mini-batch/"
-BATCH_NAME = MISSION_BATCH_DIR.replace('./datasets/mini-batch/Batch', '').replace('_distanced.csv', '')
+SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
+BATCH_NAME = MISSION_BATCH_DIR.replace(f'./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch', '').replace('_distanced.csv', '')
 BASE_MISSION = [0, 0, 0, 0, 0, 0, 0, 0, 0]  #virtual base mission for operators to start and end their routes
 
 class MiniBatchScheduleGenerator:

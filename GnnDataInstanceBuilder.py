@@ -10,12 +10,13 @@ from ParameterDataLoader import ParameterDataLoader
 from MultiCriteriaGNNModel import MultiCriteriaGNNModel
 
 #file paths
-MISSION_BATCH_DIR = "./datasets/mini-batch/Batch10M_distanced.csv"
+LARGE_SCALE_BATCH_NAME = "Batch9000M"
+MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
-MISSION_BATCH_TRAVEL_DIR = "./datasets/mini-batch/Batch10M_travel_distanced.csv"
+MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
 FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
-SCHEDULE_DIR = "./schedules/mini-batch/"
+SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 
 H_FIXED_MINUTES = 60 #480 for base shift 
 ALPHA = 1.0 #makespan weight
