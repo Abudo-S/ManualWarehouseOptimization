@@ -110,8 +110,9 @@ class ScheduleEvaluator:
         """
         metrics = {}
         
-        #threshold for binary classification like logistic regression after sigmoid
-        threshold = 0.5
+        #threshold for binary classification accurcy like logistic regression after sigmoid
+        #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
+        threshold = 0.05
 
         #activation head (operator nodes)
         if 'activation' in preds:
