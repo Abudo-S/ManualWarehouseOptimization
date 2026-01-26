@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from sklearn.metrics import confusion_matrix, accuracy_score
+from sklearn.metrics import precision_score, recall_score, f1_score
 import torch.nn.functional as F
 from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader
@@ -12,6 +13,10 @@ from multiprocessing import cpu_count
 
 TRAINING_SET_SIZE_PERCENT = 0.85
 NO_CUDA = False
+
+#threshold for binary classification accurcy like logistic regression after sigmoid
+#need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
+CLASSIFICATION_THRESHOLD = 0.05
 
 class ScheduleEvaluator:
     def __init__(self, model, schedule_dataset, batch_size):
@@ -96,24 +101,38 @@ class ScheduleEvaluator:
 
         return total_loss, loss_act.item(), loss_assign.item(), loss_seq.item()
 
-    def calculate_metrics(self, preds, batch):
+    def calc_f1_metrics(preds, targets, threshold=CLASSIFICATION_THRESHOLD):
+        """
+        Calculates Precision, Recall, and F1 score for binary classification.
+        Args:
+            preds (torch.Tensor): Model predictions (probabilities).
+            targets (torch.Tensor): Ground truth labels.
+            threshold (float): Threshold to convert probabilities to binary predictions.
+        Returns:
+            dict: Contains precision, recall, and f1 score.
+        """
+        y_pred = (preds > threshold).int().cpu().numpy()
+        y_true = targets.cpu().numpy()
+        
+        return {
+            "precision": precision_score(y_true, y_pred, zero_division=0),
+            "recall": recall_score(y_true, y_pred, zero_division=0),
+            "f1": f1_score(y_true, y_pred, zero_division=0)
+        }
+
+    def calculate_metrics(self, preds, batch, threshold=CLASSIFICATION_THRESHOLD):
         """
         Calculates accuracy and confusion matrix for Activation, Assignment, and Sequence.
-        
         Args:
             preds (dict): Output from model(batch) containing 'activation', 'assignment', 'sequence'
                         These are ALREADY probabilities (0-1) due to sigmoid in model.
             batch (HeteroData): The batch containing ground truth labels.
-            
+            threshold (float): Threshold to convert probabilities to binary predictions.
         Returns:
             dict: Contains accuracy and confusion matrix for each head.
         """
         metrics = {}
         
-        #threshold for binary classification accurcy like logistic regression after sigmoid
-        #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
-        threshold = 0.05
-
         #activation head (operator nodes)
         if 'activation' in preds:
             #preds shape: [num_operators, 1]
