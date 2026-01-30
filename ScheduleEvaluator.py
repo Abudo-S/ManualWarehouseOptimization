@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import confusion_matrix, accuracy_score
 from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.metrics import precision_recall_curve
 import torch.nn.functional as F
 from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader
@@ -100,6 +101,82 @@ class ScheduleEvaluator:
         #normalized_loss = total_loss / sum_weights
 
         return total_loss, loss_act.item(), loss_assign.item(), loss_seq.item()
+
+    def tune_threshold(self):
+        """
+        Finds the optimal classification threshold using the Precision-Recall Curve.
+        The tuning is done on the validation set (here, we use the test set for simplicity, but anyway the final test set is kept apart).
+        Note that the threshold might need to be tuned separately for each head (activation, assignment, sequence).
+        Here, we aggregate all predictions and labels from all heads and tune a shared single threshold for simplicity.
+        
+        Returns: best_threshold, best_f1
+        """
+
+        print("Tuning threshold using validation Set...")
+        
+        #collect all probs and labels 
+        all_probs = []
+        all_labels = []
+        
+        self.model.eval()
+        loader = DataLoader(self.schedule_test_dataset, batch_size=self.batch_size, shuffle=False)
+        
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(self.device)
+                batch_dict_arg = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
+                preds = self.model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
+                
+                #aggregate from all heads (Activation, Assignment, Sequence)
+                #[Note] We might tune them separately for better performance per head
+                for head_name in ['activation', 'assignment', 'sequence']:
+                    if head_name in preds:
+                        #probs (sigmoid output)
+                        probs = preds[head_name].cpu().numpy().flatten()
+                        
+                        #ground truth
+                        #map head name to edge type/node type
+                        if head_name == 'activation':
+                            labels = batch['operator'].y.cpu().numpy().flatten()
+                        elif head_name == 'assignment':
+                            labels = batch['operator', 'assign', 'order'].y.cpu().numpy().flatten()
+                        elif head_name == 'sequence':
+                            labels = batch['order', 'to', 'order'].y.cpu().numpy().flatten()
+                            
+                        all_probs.append(probs)
+                        all_labels.append(labels)
+
+        #concatenate everything into one giant array
+        y_scores = np.concatenate(all_probs)
+        y_true = np.concatenate(all_labels)
+        
+        #use Scikit-Learn to get P/R curve
+        #thresholds array is one element smaller than precision/recall arrays
+        precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
+        
+        #calculate F1 for every single threshold
+        #handle division by zero (0 precision + 0 recall)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+        f1_scores = np.nan_to_num(f1_scores) # Replace NaNs with 0
+        
+        #find the Index of the Best F1
+        #Note: f1_scores has same length as precisions/recalls, which is len(thresholds) + 1
+        #We ignore the last element (which corresponds to threshold=1.0)
+        best_idx = np.argmax(f1_scores)
+        
+        #safety check if best_idx is out of bounds for thresholds
+        if best_idx < len(thresholds):
+            best_threshold = thresholds[best_idx]
+            best_f1 = f1_scores[best_idx]
+        else:
+            best_threshold = CLASSIFICATION_THRESHOLD   #fallback
+            best_f1 = 0.0
+
+        print(f"Optimal threshold: {best_threshold:.4f} (max F1: {best_f1:.4f})")
+        
+        return best_threshold, best_f1
+ 
 
     def calc_f1_metrics(preds, targets, threshold=CLASSIFICATION_THRESHOLD):
         """
