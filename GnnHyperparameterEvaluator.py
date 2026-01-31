@@ -6,20 +6,38 @@ from sklearn.model_selection import KFold
 from torch_geometric.loader import DataLoader
 from ScheduleEvaluator import ScheduleEvaluator
 from MultiCriteriaGNNModel import MultiCriteriaGNNModel
+from GnnScheduleDataset import GnnScheduleDataset
+
+LARGE_SCALE_BATCH_NAME = "Batch1000M" #Batch1000M
+TARGET_MINI_BATCH_SIZE = 10 #number of missions per mini-batch
+LARGE_SCALE_MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}.csv"
+PREPROCESSED_BATCH_DIR = f"./preprocessed/{LARGE_SCALE_BATCH_NAME}/Batch{TARGET_MINI_BATCH_SIZE}M_idx.xlsx" #idx to be replaced cluster idx
+MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
+UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
+MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
+FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
+#MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
+SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
+NUM_EPOCHS = 10
+BATCH_SIZE = 16 #nice to be equal to 32 or 64 since we have small mini-batch instances
+LEARNING_RATE = 0.001
 
 class GnnHyperparameterEvaluator(ScheduleEvaluator):
     def __init__(self, 
                  model, #initial model (not used, will re-initialize per fold)
                  schedule_dataset, 
-                 batch_size,
-                 learning_rate=0.001, #default lr (not used, will get from config)
+                 batch_size, #default batch size (not used, will be read from config)
+                 learning_rate=0.001, #default lr (not used, will be read from config)
                  n_epochs=50):
         
-        super().__init__(model, schedule_dataset, batch_size)
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model.to(self.device)
         self.dataset = schedule_dataset
         self.learning_rate = learning_rate
         self.n_epochs = n_epochs
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        super().__init__(model, schedule_dataset, batch_size)
+
 
     def train_and_evaluate_single_optimizer(self, config, dataset, thresholds, k_folds=5):
         """
@@ -63,14 +81,13 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     preds = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
                     
                     #calculate loss
-                    loss_dict = self.weighted_loss(preds, batch, batch.u) 
-                    loss = loss_dict['total_loss']
+                    loss, l_act, l_assign, l_seq = self.weighted_loss(preds, batch, batch.u) 
                     
                     loss.backward()
                     optimizer.step()
 
             #evaluation & threshold Tuning
-            best_f1, best_thresh = self._evaluate_fold(model, val_loader, thresholds)
+            best_f1, best_thresh = self._evaluate_fold(model, val_loader)
             fold_results.append({'val_score': best_f1, 'best_threshold': best_thresh})
             print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Thresh: {best_thresh:.4f}")
 
@@ -138,8 +155,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     preds = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
                     
                     #total loss
-                    loss_dict = self.weighted_loss(preds, batch, batch.u)
-                    loss = loss_dict['total_loss']
+                    loss, l_act, l_assign, l_seq = self.weighted_loss(preds, batch, batch.u)
                     
                     #backward pass for all parameters (trunk + heads)
                     loss.backward()
@@ -149,7 +165,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                         opt.step()
 
             #evaluation
-            best_f1, best_thresh = self._evaluate_fold(model, val_loader, thresholds)
+            best_f1, best_thresh = self._evaluate_fold(model, val_loader)
             fold_results.append({'val_score': best_f1, 'best_threshold': best_thresh})
             print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Threshold: {best_thresh:.4f}")
 
@@ -225,7 +241,6 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
     def run_grid_search(self, dataset, param_grid, k_folds=5):
         #initialize evaluator (Model is re-init inside, so we pass None or a dummy)
         #we pass a dummy batch_size initially, it gets overridden by config
-        evaluator = GnnHyperparameterEvaluator(model=None, schedule_dataset=dataset, batch_size=32, n_epochs=20)
 
         #generate all combinations of hyperparameters
         keys, values = zip(*param_grid.items())
@@ -246,7 +261,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
             
             try:
                 #the evaluator automatically chooses single vs multi optimizer based on keys in config
-                avg_f1, avg_thresh = evaluator.train_and_evaluate(
+                avg_f1, avg_thresh = self.train_and_evaluate(
                     config=config, 
                     dataset=dataset, 
                     k_folds=k_folds
@@ -266,7 +281,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     best_score = avg_f1
                     best_config = config
                     best_threshold = avg_thresh
-                    print(">>> New Best Configuration Found! <<<")
+                    print(">>>New Best Configuration Found!<<<")
                     
             except Exception as e:
                 print(f"Error running config {config}: {str(e)}")
@@ -357,6 +372,15 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         return best_threshold, best_f1
 
 if __name__ == "__main__":
+    #init dataset
+    dataset = GnnScheduleDataset(
+        schedule_dir=SCHEDULE_DIR,
+        mission_base_path=MISSION_BATCH_DIR,
+        edge_base_path=MISSION_BATCH_TRAVEL_DIR,
+        pallet_types_file_path=UDC_TYPES_DIR,
+        fork_path=FORK_LIFTS_DIR
+    )
+
     #hyperparameter space
     # param_grid = {
     #     'batch_size': [32, 64, 128], #we have small graphs, so we can try larger batch sizes
@@ -374,10 +398,10 @@ if __name__ == "__main__":
         'batch_size': [32, 64],
         'hidden_dim': [64, 128],
         'heads': [4], #GAT heads
-        'lr_trunk': [1e-3, 5e-4], #backbone LR
-        'lr_activation': [1e-2, 1e-3], #head 1 LR
-        'lr_assignment': [1e-3], #head 2 LR
-        'lr_sequence': [1e-3]  #head 3 LR
+        'lr_trunk': [1e-3, 5e-4], #backbone lr
+        'lr_activation': [1e-2, 1e-3], #head 1 lr
+        'lr_assignment': [1e-3], #head 2 lr
+        'lr_sequence': [1e-3]  #head 3 lr
     }
     
     #single optimizer grid (global lr)
@@ -387,3 +411,21 @@ if __name__ == "__main__":
     #     'heads': [4],
     #     'learning_rate': [0.01, 0.001] #global LR
     # }
+
+    #init model
+    if len(dataset) > 0:
+        sample_data = dataset[0]
+        model = MultiCriteriaGNNModel(
+            metadata=sample_data.metadata(),
+            hidden_dim=64,
+            num_layers=3,
+            heads=4
+        )
+
+    gnnHyperparamEvaluator = GnnHyperparameterEvaluator(model=model, 
+                                                        schedule_dataset=dataset,   
+                                                        batch_size=BATCH_SIZE,
+                                                        learning_rate=LEARNING_RATE,
+                                                        n_epochs=NUM_EPOCHS)
+    
+    best_conf, best_val = gnnHyperparamEvaluator.run_grid_search(dataset, param_grid_multi, k_folds=3)
