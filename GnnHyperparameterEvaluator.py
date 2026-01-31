@@ -20,7 +20,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         self.n_epochs = n_epochs
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    def train_and_evaluate_single_optimizer(self, config, dataset, k_folds=5):
+    def train_and_evaluate_single_optimizer(self, config, dataset, thresholds, k_folds=5):
         """
         Standard approach: Single lr for the entire model.
         """
@@ -56,7 +56,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     batch = batch.to(self.device)
                     optimizer.zero_grad()
                     
-                    #create batch_dict for the model
+                    #batch_dict for the model
                     batch_dict_arg = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
                     
                     preds = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
@@ -69,7 +69,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     optimizer.step()
 
             #evaluation & threshold Tuning
-            best_f1, best_thresh = self._evaluate_fold(model, val_loader)
+            best_f1, best_thresh = self._evaluate_fold(model, val_loader, thresholds)
             fold_results.append({'val_score': best_f1, 'best_threshold': best_thresh})
             print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Thresh: {best_thresh:.4f}")
 
@@ -79,6 +79,70 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         return avg_score, avg_thresh
 
+    
+    def _evaluate_fold(self, model, val_loader):
+        """
+        Helper to run evaluation on a fold and tune threshold without retraining.
+        Best threshold is found through precision-recall curve by maximizing F1 over all predictions in the validation set.
+          
+        Returns: best_f1, best_threshold
+        """
+        model.eval()
+        all_probs = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(self.device)
+                batch_dict_arg = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
+                preds = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
+
+                #aggregate predictions and labels from all heads
+                for head_name in ['activation', 'assignment', 'sequence']:
+                    if head_name in preds:
+                        probs = preds[head_name].cpu().numpy().flatten()
+                        
+                        if head_name == 'activation':
+                            labels = batch['operator'].y.cpu().numpy().flatten()
+                        elif head_name == 'assignment':
+                            labels = batch['operator', 'assign', 'order'].y.cpu().numpy().flatten()
+                        elif head_name == 'sequence':
+                            labels = batch['order', 'to', 'order'].y.cpu().numpy().flatten()
+                        
+                        all_probs.append(probs)
+                        all_labels.append(labels)
+
+        #concatenate all batches
+        y_scores = np.concatenate(all_probs)
+        y_true = np.concatenate(all_labels)
+
+        #vectorized F1 calculation for all thresholds
+        precisions, recalls, thresh_curve = precision_recall_curve(y_true, y_scores)
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+            f1_scores = np.nan_to_num(f1_scores)
+        
+        #find best F1
+        #precisions/recalls have 1 extra element (for threshold=1.0)
+        best_idx = np.argmax(f1_scores)
+        
+        if best_idx < len(thresh_curve):
+            best_thresh = thresh_curve[best_idx]
+            best_f1 = f1_scores[best_idx]
+        else:
+            best_thresh = 0.5
+            best_f1 = 0.0
+
+        return best_f1, best_thresh
+
+    #wrapper to select train_and_evaluate method
+    def train_and_evaluate(self, config, dataset, thresholds, k_folds=5):
+        if 'lr_trunk' in config:
+            return self.train_and_evaluate_multi_optimizer(config, dataset, thresholds, k_folds)
+        else:
+            return self.train_and_evaluate_single_optimizer(config, dataset, thresholds, k_folds)
+        
     def tune_threshold(self):
             """
             Finds the optimal classification threshold using the Precision-Recall Curve.
@@ -104,8 +168,8 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     batch_dict_arg = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
                     preds = self.model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
                     
-                    #aggregate from all heads (Activation, Assignment, Sequence)
-                    #[Note] We might tune them separately for better performance per head
+                    #aggregate from all heads (activation, assignment, sequence)
+                    #note: we might tune them separately for better performance per head
                     for head_name in ['activation', 'assignment', 'sequence']:
                         if head_name in preds:
                             #probs (sigmoid output)
@@ -137,7 +201,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                 f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
             f1_scores = np.nan_to_num(f1_scores) # Replace NaNs with 0
             
-            #find the Index of the Best F1
+            #find the index of the best F1
             #Note: f1_scores has same length as precisions/recalls, which is len(thresholds) + 1
             #We ignore the last element (which corresponds to threshold=1.0)
             best_idx = np.argmax(f1_scores)
@@ -163,5 +227,6 @@ if __name__ == "__main__":
         'heads': [4, 8] #GATv2 heads
     }
 
-    #possibile thresholds (cheap evaluation, no retraining)
-    thresholds = np.linspace(0.01, 0.5, 50).tolist() #[0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.4, 0.5]
+    # possibile thresholds (cheap evaluation, no retraining) 
+    # note that the best is found automatically via precision-recall curve
+    # thresholds = np.linspace(0.01, 0.5, 50).tolist() #[0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.4, 0.5]
