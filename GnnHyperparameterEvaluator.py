@@ -79,7 +79,84 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         return avg_score, avg_thresh
 
-    
+    def train_and_evaluate_multi_optimizer(self, config, dataset, thresholds, k_folds=5):
+        """
+        Advanced approach: Separate lrs for Trunk and each Head using separate optimizers.
+        """
+        kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+        fold_results = []
+
+        print(f"Starting {k_folds}-Fold CV (multi-optimizer)...")
+
+        for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
+            #data splitting
+            train_dataset = [dataset[i] for i in train_idx]
+            val_dataset = [dataset[i] for i in val_idx]
+            
+            train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False)
+
+            #model initialization
+            metadata = (dataset[0].metadata()[0], dataset[0].metadata()[1])
+            model = MultiCriteriaGNNModel(
+                metadata=metadata, 
+                hidden_dim=config['hidden_dim'], 
+                heads=config['heads']
+            ).to(self.device)
+
+            #disjoint parameter definition
+            trunk_params = (
+                list(model.order_lin.parameters()) +
+                list(model.op_lin.parameters()) +
+                list(model.convs.parameters())
+            )
+            activation_params = list(model.activation_head.parameters())
+            assignment_params = list(model.assign_head.parameters())
+            sequence_params = list(model.seq_head.parameters())
+
+            #separate optimizers
+            #note: We get the config by key or provide its default value
+            optimizers = []
+            opt_trunk = torch.optim.Adam(trunk_params, lr=config.get('lr_trunk', self.learning_rate))
+            opt_activation = torch.optim.Adam(activation_params, lr=config.get('lr_activation', self.learning_rate))
+            opt_assignment = torch.optim.Adam(assignment_params, lr=config.get('lr_assignment', self.learning_rate))
+            opt_sequence = torch.optim.Adam(sequence_params, lr=config.get('lr_sequence', self.learning_rate))
+            optimizers.extend([opt_trunk, opt_activation, opt_assignment, opt_sequence])
+
+            #training loop
+            for epoch in range(self.n_epochs):
+                model.train()
+                for batch in train_loader:
+                    batch = batch.to(self.device)
+                    
+                    #zero all gradients
+                    for opt in optimizers:
+                        opt.zero_grad()
+                    
+                    batch_dict_arg = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
+                    preds = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
+                    
+                    #total loss
+                    loss_dict = self.weighted_loss(preds, batch, batch.u)
+                    loss = loss_dict['total_loss']
+                    
+                    #backward pass for all parameters (trunk + heads)
+                    loss.backward()
+
+                    #step all optimizers independently
+                    for opt in optimizers:
+                        opt.step()
+
+            #evaluation
+            best_f1, best_thresh = self._evaluate_fold(model, val_loader, thresholds)
+            fold_results.append({'val_score': best_f1, 'best_threshold': best_thresh})
+            print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Threshold: {best_thresh:.4f}")
+
+        avg_score = sum(r['val_score'] for r in fold_results) / k_folds
+        avg_thresh = sum(r['best_threshold'] for r in fold_results) / k_folds
+        
+        return avg_score, avg_thresh
+
     def _evaluate_fold(self, model, val_loader):
         """
         Helper to run evaluation on a fold and tune threshold without retraining.
