@@ -20,10 +20,30 @@ NO_CUDA = False
 CLASSIFICATION_THRESHOLD = 0.05
 
 class ScheduleEvaluator:
-    def __init__(self, model, schedule_dataset, batch_size):
+    def __init__(self, 
+                 model, 
+                 schedule_dataset, 
+                 batch_size,
+                 act_threshold=CLASSIFICATION_THRESHOLD,
+                 assign_threshold=CLASSIFICATION_THRESHOLD,
+                 seq_threshold=CLASSIFICATION_THRESHOLD):
+        """
+        Initializes the ScheduleEvaluator with the model, dataset, and evaluation parameters.
+        Args:
+            model (nn.Module): The GNN model to be evaluated.
+            schedule_dataset (Dataset): The dataset containing schedule examples.
+            batch_size (int): Batch size for evaluation.
+            act_threshold (float): Threshold for activation head.
+            assign_threshold (float): Threshold for assignment head.
+            seq_threshold (float): Threshold for sequence head.
+        """
+
         self.model = model
         self.schedule_dataset = schedule_dataset
         self.batch_size = batch_size
+        self.act_threshold = act_threshold
+        self.assign_threshold = assign_threshold
+        self.seq_threshold = seq_threshold
 
         self.device = torch.device('cuda' if torch.cuda.is_available() and not NO_CUDA else 'cpu')
         self.model.to(self.device)
@@ -102,16 +122,26 @@ class ScheduleEvaluator:
 
         return total_loss, loss_act.item(), loss_assign.item(), loss_seq.item()
 
-    def calc_f1_metrics(self, preds, targets, threshold = CLASSIFICATION_THRESHOLD):
+    def calc_f1_metrics(self, preds, targets, head_name=None):
         """
         Calculates Precision, Recall, and F1 score for binary classification.
         Args:
             preds (torch.Tensor): Model predictions (probabilities).
             targets (torch.Tensor): Ground truth labels.
-            threshold (float): Threshold to convert probabilities to binary predictions.
+            head_name (str): Name of the head ('activation', 'assignment', 'sequence') to select threshold.
         Returns:
             dict: Contains precision, recall, and f1 score.
         """
+
+        if head_name == 'activation':
+            threshold = self.act_threshold
+        elif head_name == 'assignment':
+            threshold = self.assign_threshold
+        elif head_name == 'sequence':
+            threshold = self.seq_threshold
+        else:
+            threshold = CLASSIFICATION_THRESHOLD
+
         y_pred = (preds > threshold).int().cpu().numpy()
         y_true = targets.cpu().numpy()
         
@@ -120,15 +150,14 @@ class ScheduleEvaluator:
             "recall": recall_score(y_true, y_pred, zero_division=0),
             "f1": f1_score(y_true, y_pred, zero_division=0)
         }
-
-    def calculate_metrics(self, preds, batch, threshold=CLASSIFICATION_THRESHOLD):
+    
+    def calculate_metrics(self, preds, batch):
         """
         Calculates accuracy and confusion matrix for Activation, Assignment, and Sequence.
         Args:
             preds (dict): Output from model(batch) containing 'activation', 'assignment', 'sequence'
                         These are ALREADY probabilities (0-1) due to sigmoid in model.
             batch (HeteroData): The batch containing ground truth labels.
-            threshold (float): Threshold to convert probabilities to binary predictions.
         Returns:
             dict: Contains accuracy and confusion matrix for each head.
         """
@@ -138,7 +167,7 @@ class ScheduleEvaluator:
         if 'activation' in preds:
             #preds shape: [num_operators, 1]
             y_prob = preds['activation'].detach().cpu().numpy()
-            y_pred = (y_prob > threshold).astype(int).flatten()
+            y_pred = (y_prob > self.act_threshold).astype(int).flatten()
             
             #operator ground truth: batch['operator'].y
             y_true = batch['operator'].y.detach().cpu().numpy().flatten()
@@ -150,7 +179,7 @@ class ScheduleEvaluator:
         if 'assignment' in preds:
             #preds shape: [num_assign_edges, 1]
             y_prob = preds['assignment'].detach().cpu().numpy()
-            y_pred = (y_prob > threshold).astype(int).flatten()
+            y_pred = (y_prob > self.assign_threshold).astype(int).flatten()
             
             #assignment ground truth: ['operator', 'assign', 'order'].y
             y_true = batch['operator', 'assign', 'order'].y.detach().cpu().numpy().flatten()
@@ -162,7 +191,7 @@ class ScheduleEvaluator:
         if 'sequence' in preds:
             #preds shape: [num_seq_edges, 1]
             y_prob = preds['sequence'].detach().cpu().numpy()
-            y_pred = (y_prob > threshold).astype(int).flatten()
+            y_pred = (y_prob > self.seq_threshold).astype(int).flatten()
 
             #sequence ground truth: ['order', 'to', 'order'].y
             y_true = batch['order', 'to', 'order'].y.detach().cpu().numpy().flatten()
