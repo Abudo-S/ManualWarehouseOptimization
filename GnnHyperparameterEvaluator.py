@@ -22,19 +22,29 @@ NUM_EPOCHS = 10
 BATCH_SIZE = 16 #nice to be equal to 32 or 64 since we have small mini-batch instances
 LEARNING_RATE = 0.001
 
+#default threshold for binary classification accurcy like logistic regression after sigmoid
+#need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
+CLASSIFICATION_THRESHOLD = 0.05
+
 class GnnHyperparameterEvaluator(ScheduleEvaluator):
     def __init__(self, 
                  model, #initial model (not used, will re-initialize per fold)
                  schedule_dataset, 
                  batch_size, #default batch size (not used, will be read from config)
                  learning_rate=0.001, #default lr (not used, will be read from config)
-                 n_epochs=50):
+                 n_epochs=50,
+                 default_threshold=CLASSIFICATION_THRESHOLD,
+                 tune_multiple_thresholds=False): #whether to tune separate thresholds per head or a single shared one
         
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         model.to(self.device)
+
         self.dataset = schedule_dataset
+        self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.n_epochs = n_epochs
+        self.default_threshold = default_threshold
+        self.tune_multiple_thresholds = tune_multiple_thresholds
 
         super().__init__(model, schedule_dataset, batch_size)
 
@@ -225,7 +235,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
             best_thresh = thresh_curve[best_idx]
             best_f1 = f1_scores[best_idx]
         else:
-            best_thresh = 0.5
+            best_thresh = self.default_threshold #default fallback
             best_f1 = 0.0
 
         return best_f1, best_thresh
@@ -254,9 +264,9 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         results_log = []
 
-        #iterate through Grid
+        #iterate through grid
         for i, config in enumerate(combinations):
-            print(f"\n--- Running Config {i+1}/{len(combinations)} ---")
+            print(f"\n---Running config {i+1}/{len(combinations)}---")
             print(config)
             
             try:
@@ -267,7 +277,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     k_folds=k_folds
                 )
                 
-                print(f"Result: Avg F1 = {avg_f1:.4f} (Best Threshold: {avg_thresh:.4f})")
+                print(f"Result: avg F1 = {avg_f1:.4f} (best threshold: {avg_thresh:.4f})")
                 
                 #log results
                 results_log.append({
@@ -276,21 +286,21 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     'threshold': avg_thresh
                 })
                 
-                #update best
+                #update best config
                 if avg_f1 > best_score:
                     best_score = avg_f1
                     best_config = config
                     best_threshold = avg_thresh
-                    print(">>>New Best Configuration Found!<<<")
+                    print(">>>New best configuration found!<<<")
                     
             except Exception as e:
                 print(f"Error running config {config}: {str(e)}")
                 continue
 
         print("\n-------------------FINAL RESULTS--------------------")
-        print(f"Best F1 Score: {best_score:.4f}")
-        print(f"Best Threshold: {best_threshold:.4f}")
-        print("Best Configuration:")
+        print(f"Best F1 score: {best_score:.4f}")
+        print(f"Best threshold: {best_threshold:.4f}")
+        print("Best configuration:")
         for k, v in best_config.items():
             print(f"{k}: {v}")
         
