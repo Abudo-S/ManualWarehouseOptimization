@@ -184,6 +184,82 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         return avg_score, avg_thresh
 
+    def _evaluate_fold_separate_thresholds(self, model, val_loader):
+        """
+        Evaluates the model and finds the best threshold SEPARATELY for each head
+        using the Precision-Recall Curve (no manual loop needed).
+        
+        Returns: 
+            avg_f1 (float): Average F1 across all heads (for hyperparameter selection)
+            best_thresholds (dict): ex. {'activation': 0.4, 'assignment': 0.1, 'sequence': 0.3}
+        """
+        model.eval()
+        
+        #data to be stored per head
+        head_data = {
+            'activation': {'probs': [], 'labels': []},
+            'assignment': {'probs': [], 'labels': []},
+            'sequence': {'probs': [], 'labels': []}
+        }
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(self.device)
+                batch_dict_arg = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
+                preds = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
+
+                for head in head_data:
+                    if head in preds:
+                        probs = preds[head].cpu().numpy().flatten()
+                        
+                        if head == 'activation':
+                            labels = batch['operator'].y.cpu().numpy().flatten()
+                        elif head == 'assignment':
+                            labels = batch['operator', 'assign', 'order'].y.cpu().numpy().flatten()
+                        elif head == 'sequence':
+                            labels = batch['order', 'to', 'order'].y.cpu().numpy().flatten()
+                        
+                        head_data[head]['probs'].append(probs)
+                        head_data[head]['labels'].append(labels)
+
+        final_thresholds = {}
+        final_f1s = {}
+        
+        for head, data in head_data.items():
+            if not data['probs']: continue 
+            
+            y_scores = np.concatenate(data['probs'])
+            y_true = np.concatenate(data['labels'])
+            
+            #vectorized optimal threshold search
+            #precision, recall, thresholds = precision_recall_curve(y_true, y_scores)
+            #note: thresholds array is shorter than p/r arrays by 1
+            precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
+            
+            #calculate F1 for all thresholds at once
+            with np.errstate(divide='ignore', invalid='ignore'):
+                f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+                f1_scores = np.nan_to_num(f1_scores) #replace NaNs with 0
+            
+            #idx of max F1
+            best_idx = np.argmax(f1_scores)
+            
+            #handle edge case where best_idx might be the last element (threshold = 1.0)
+            if best_idx < len(thresholds):
+                best_t = thresholds[best_idx]
+                best_f1 = f1_scores[best_idx]
+            else:
+                best_t = self.default_threshold #default fallback
+                best_f1 = 0.0
+            
+            final_thresholds[head] = float(best_t)
+            final_f1s[head] = float(best_f1)
+
+        #metric for hyperparameter selection: average F1 of all heads
+        avg_f1 = sum(final_f1s.values()) / len(final_f1s) if final_f1s else 0.0
+        
+        return avg_f1, final_thresholds
+
     def _evaluate_fold(self, model, val_loader):
         """
         Helper to run evaluation on a fold and tune threshold without retraining.
