@@ -49,7 +49,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         super().__init__(model, schedule_dataset, batch_size)
 
 
-    def train_and_evaluate_single_optimizer(self, config, dataset, thresholds, k_folds=5):
+    def train_and_evaluate_single_optimizer(self, config, dataset, k_folds=5):
         """
         Standard approach: Single lr for the entire model.
         Returns:
@@ -123,9 +123,9 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         return avg_score, avg_thresh
 
-    def train_and_evaluate_multi_optimizer(self, config, dataset, thresholds, k_folds=5):
+    def train_and_evaluate_multi_optimizer(self, config, dataset, k_folds=5):
         """
-        Advanced approach: Separate lrs for trunk and each Head using separate optimizers.
+        Advanced approach: Separate lrs for trunk and each head using separate optimizers.
         Returns:
             avg_score (float): Average F1 score across folds
             avg_thresh (float or dict): Average best threshold(s) across folds
@@ -357,8 +357,6 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
     
     
     def run_kfold_grid_search(self, dataset, param_grid, k_folds=5):
-        #initialize evaluator (Model is re-init inside, so we pass None or a dummy)
-        #we pass a dummy batch_size initially, it gets overridden by config
 
         #generate all combinations of hyperparameters
         keys, values = zip(*param_grid.items())
@@ -368,7 +366,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         best_score = -1.0
         best_config = None
-        best_threshold = 0.5
+        best_threshold = self.default_threshold # default init
         
         results_log = []
 
@@ -385,7 +383,12 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     k_folds=k_folds
                 )
                 
-                print(f"Result: avg F1 = {avg_f1:.4f} (best threshold: {avg_thresh:.4f})")
+                if isinstance(avg_thresh, dict):
+                    thresh_str = str({k: round(v, 4) for k, v in avg_thresh.items()})
+                else:
+                    thresh_str = f"{avg_thresh:.4f}"
+                    
+                print(f"Result: avg F1 = {avg_f1:.4f} (best threshold: {thresh_str})")
                 
                 #log results
                 results_log.append({
@@ -407,10 +410,18 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
 
         print("\n-------------------FINAL RESULTS--------------------")
         print(f"Best F1 score: {best_score:.4f}")
-        print(f"Best threshold: {best_threshold:.4f}")
+        
+        if isinstance(best_threshold, dict):
+             thresh_str_final = str({k: round(v, 4) for k, v in best_threshold.items()})
+        else:
+             thresh_str_final = f"{best_threshold:.4f}"
+        
+        print(f"Best threshold: {thresh_str_final}")
+        
         print("Best configuration:")
-        for k, v in best_config.items():
-            print(f"{k}: {v}")
+        if best_config:
+            for k, v in best_config.items():
+                print(f"{k}: {v}")
         
         return best_config, best_score
 
@@ -547,4 +558,4 @@ if __name__ == "__main__":
                                                         n_epochs=NUM_EPOCHS,
                                                         tune_multiple_thresholds=True) #tune separate threshold per head
     
-    best_conf, best_val = gnnHyperparamEvaluator.run_kfold_grid_search(dataset, param_grid_multi, k_folds=3)
+    best_conf, best_val = gnnHyperparamEvaluator.run_kfold_grid_search(dataset, param_grid_multi)
