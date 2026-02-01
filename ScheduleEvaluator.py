@@ -150,6 +150,76 @@ class ScheduleEvaluator:
             "recall": recall_score(y_true, y_pred, zero_division=0),
             "f1": f1_score(y_true, y_pred, zero_division=0)
         }
+
+    def calc_overall_metrics(self, preds_dict, batch):
+        """
+        Calculates metrics for each head individually and then averages them
+        to get an overall model performance score.
+        
+        Args:
+            preds_dict (dict): Dictionary of model predictions {'activation': tensor, ...}
+            batch (HeteroData): Batch object containing ground truth labels.
+            
+        Returns:
+            dict: {
+                'overall_f1': float, 
+                'overall_precision': float, 
+                'overall_recall': float,
+                'activation': dict,  # individual metrics
+                'assignment': dict,
+                'sequence': dict
+            }
+        """
+        head_metrics = {}
+        total_f1 = 0
+        total_prec = 0
+        total_rec = 0
+        valid_heads = 0
+
+        #activation head
+        if 'activation' in preds_dict:
+            targets = batch['operator'].y
+            m = self.calc_f1_metrics(preds_dict['activation'], targets, head_name='activation')
+            head_metrics['activation'] = m
+            total_f1 += m['f1']
+            total_prec += m['precision']
+            total_rec += m['recall']
+            valid_heads += 1
+
+        #assignment head
+        if 'assignment' in preds_dict:
+            targets = batch['operator', 'assign', 'order'].y
+            m = self.calc_f1_metrics(preds_dict['assignment'], targets, head_name='assignment')
+            head_metrics['assignment'] = m
+            total_f1 += m['f1']
+            total_prec += m['precision']
+            total_rec += m['recall']
+            valid_heads += 1
+
+        #sequence head
+        if 'sequence' in preds_dict:
+            targets = batch['order', 'to', 'order'].y
+            m = self.calc_f1_metrics(preds_dict['sequence'], targets, head_name='sequence')
+            head_metrics['sequence'] = m
+            total_f1 += m['f1']
+            total_prec += m['precision']
+            total_rec += m['recall']
+            valid_heads += 1
+
+        #average
+        if valid_heads > 0:
+            overall_metrics = {
+                'overall_f1': total_f1 / valid_heads,
+                'overall_precision': total_prec / valid_heads,
+                'overall_recall': total_rec / valid_heads
+            }
+        else:
+            overall_metrics = {'overall_f1': 0.0, 'overall_precision': 0.0, 'overall_recall': 0.0}
+
+        #merge individual head metrics into the result for detailed logging
+        overall_metrics.update(head_metrics)
+        
+        return overall_metrics
     
     def calculate_metrics(self, preds, batch):
         """
