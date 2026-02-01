@@ -52,12 +52,15 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
     def train_and_evaluate_single_optimizer(self, config, dataset, thresholds, k_folds=5):
         """
         Standard approach: Single lr for the entire model.
+        Returns:
+            avg_score (float): Average F1 score across folds
+            avg_thresh (float or dict): Average best threshold(s) across folds
         """
 
         kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
         fold_results = []
 
-        print(f"Starting {k_folds}-Fold CV (single optimizer)...")
+        print(f"Starting {k_folds}-Fold CV (single optimizer)({'separate-thresholds' if self.tune_multiple_thresholds else 'single-threshold'})...")
 
         for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
             #data splitting
@@ -96,25 +99,41 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     loss.backward()
                     optimizer.step()
 
-            #evaluation & threshold Tuning
-            best_f1, best_thresh = self._evaluate_fold(model, val_loader)
+            #evaluation & threshold tuning
+            if self.tune_multiple_thresholds:
+                best_f1, best_thresh = self._evaluate_fold_separate_thresholds(model, val_loader)
+            else:
+                best_f1, best_thresh = self._evaluate_fold(model, val_loader)
+            
             fold_results.append({'val_score': best_f1, 'best_threshold': best_thresh})
-            print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Thresh: {best_thresh:.4f}")
+            
+            thresh_str = str(best_thresh) if isinstance(best_thresh, float) else str({k: round(v,3) for k,v in best_thresh.items()})
+            print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Thresh: {thresh_str}")
 
         #average results
         avg_score = sum(r['val_score'] for r in fold_results) / k_folds
-        avg_thresh = sum(r['best_threshold'] for r in fold_results) / k_folds
+        
+        if self.tune_multiple_thresholds:
+            avg_thresh = {}
+            keys = fold_results[0]['best_threshold'].keys()
+            for k in keys:
+                avg_thresh[k] = sum(r['best_threshold'][k] for r in fold_results) / k_folds
+        else:
+            avg_thresh = sum(r['best_threshold'] for r in fold_results) / k_folds
         
         return avg_score, avg_thresh
 
     def train_and_evaluate_multi_optimizer(self, config, dataset, thresholds, k_folds=5):
         """
         Advanced approach: Separate lrs for trunk and each Head using separate optimizers.
+        Returns:
+            avg_score (float): Average F1 score across folds
+            avg_thresh (float or dict): Average best threshold(s) across folds
         """
         kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
         fold_results = []
 
-        print(f"Starting {k_folds}-Fold CV (multi-optimizer)...")
+        print(f"Starting {k_folds}-Fold CV (multi-optimizer)({'separate-thresholds' if self.tune_multiple_thresholds else 'single-threshold'})...")
 
         for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
             #data splitting
@@ -174,13 +193,26 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     for opt in optimizers:
                         opt.step()
 
-            #evaluation
-            best_f1, best_thresh = self._evaluate_fold(model, val_loader)
+            #evaluation & threshold tuning
+            if self.tune_multiple_thresholds:
+                best_f1, best_thresh = self._evaluate_fold_separate_thresholds(model, val_loader)
+            else:
+                best_f1, best_thresh = self._evaluate_fold(model, val_loader)
+            
             fold_results.append({'val_score': best_f1, 'best_threshold': best_thresh})
-            print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Threshold: {best_thresh:.4f}")
+            
+            thresh_str = str(best_thresh) if isinstance(best_thresh, float) else str({k: round(v,3) for k,v in best_thresh.items()})
+            print(f"Fold {fold+1}/{k_folds} | F1: {best_f1:.4f} | Thresh: {thresh_str}")
 
         avg_score = sum(r['val_score'] for r in fold_results) / k_folds
-        avg_thresh = sum(r['best_threshold'] for r in fold_results) / k_folds
+        
+        if self.tune_multiple_thresholds:
+            avg_thresh = {}
+            keys = fold_results[0]['best_threshold'].keys()
+            for k in keys:
+                avg_thresh[k] = sum(r['best_threshold'][k] for r in fold_results) / k_folds
+        else:
+            avg_thresh = sum(r['best_threshold'] for r in fold_results) / k_folds
         
         return avg_score, avg_thresh
 
@@ -324,7 +356,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
             return self.train_and_evaluate_single_optimizer(config, dataset, k_folds)
     
     
-    def run_grid_search(self, dataset, param_grid, k_folds=5):
+    def run_kfold_grid_search(self, dataset, param_grid, k_folds=5):
         #initialize evaluator (Model is re-init inside, so we pass None or a dummy)
         #we pass a dummy batch_size initially, it gets overridden by config
 
@@ -512,6 +544,7 @@ if __name__ == "__main__":
                                                         schedule_dataset=dataset,   
                                                         batch_size=BATCH_SIZE,
                                                         learning_rate=LEARNING_RATE,
-                                                        n_epochs=NUM_EPOCHS)
+                                                        n_epochs=NUM_EPOCHS,
+                                                        tune_multiple_thresholds=True) #tune separate threshold per head
     
-    best_conf, best_val = gnnHyperparamEvaluator.run_grid_search(dataset, param_grid_multi, k_folds=3)
+    best_conf, best_val = gnnHyperparamEvaluator.run_kfold_grid_search(dataset, param_grid_multi, k_folds=3)
