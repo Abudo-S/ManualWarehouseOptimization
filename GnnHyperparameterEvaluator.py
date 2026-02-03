@@ -358,6 +358,10 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
     
     
     def run_kfold_grid_search(self, dataset, param_grid, k_folds=N_FOLDS):
+        """
+        Returns:
+            best_config, best_threshold, best_score
+        """
 
         #generate all combinations of hyperparameters
         keys, values = zip(*param_grid.items())
@@ -424,7 +428,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
             for k, v in best_config.items():
                 print(f"{k}: {v}")
         
-        return best_config, best_score
+        return best_config, best_threshold, best_score
 
     def tune_threshold(self):
         """
