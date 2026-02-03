@@ -25,6 +25,7 @@ LEARNING_RATE = 0.001
 #default threshold for binary classification accurcy like logistic regression after sigmoid
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
 CLASSIFICATION_THRESHOLD = 0.05
+N_FOLDS = 5 #we can do 5-fold CV for hyperparameter tuning since we have a large number of mini-batch instances, but for final evaluation we will keep a separate test set apart (no data leakage)
 
 class GnnHyperparameterEvaluator(ScheduleEvaluator):
     def __init__(self, 
@@ -49,7 +50,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         super().__init__(model, schedule_dataset, batch_size)
 
 
-    def train_and_evaluate_single_optimizer(self, config, dataset, k_folds=5):
+    def train_and_evaluate_single_optimizer(self, config, dataset, k_folds=N_FOLDS):
         """
         Standard approach: Single lr for the entire model.
         Returns:
@@ -123,7 +124,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         return avg_score, avg_thresh
 
-    def train_and_evaluate_multi_optimizer(self, config, dataset, k_folds=5):
+    def train_and_evaluate_multi_optimizer(self, config, dataset, k_folds=N_FOLDS):
         """
         Advanced approach: Separate lrs for trunk and each head using separate optimizers.
         Returns:
@@ -349,14 +350,14 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         return best_f1, best_thresh
 
     #wrapper to select train_and_evaluate method
-    def train_and_evaluate(self, config, dataset, k_folds=5):
+    def train_and_evaluate(self, config, dataset, k_folds=N_FOLDS):
         if 'lr_trunk' in config:
             return self.train_and_evaluate_multi_optimizer(config, dataset, k_folds)
         else:
             return self.train_and_evaluate_single_optimizer(config, dataset, k_folds)
     
     
-    def run_kfold_grid_search(self, dataset, param_grid, k_folds=5):
+    def run_kfold_grid_search(self, dataset, param_grid, k_folds=N_FOLDS):
 
         #generate all combinations of hyperparameters
         keys, values = zip(*param_grid.items())
@@ -559,3 +560,7 @@ if __name__ == "__main__":
                                                         tune_multiple_thresholds=True) #tune separate threshold per head
     
     best_conf, best_val = gnnHyperparamEvaluator.run_kfold_grid_search(dataset, param_grid_multi)
+    
+    print("Best hyperparameter configuration from grid search:")
+    print(best_conf)
+    
