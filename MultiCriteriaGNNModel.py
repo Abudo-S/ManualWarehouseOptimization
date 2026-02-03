@@ -8,12 +8,13 @@ SAVE_MODEL_PATH = "checkpoints/gnn_model_weights.pth"
 SAVE_MODEL_IN_TRAINING_PATH = "checkpoints/gnn_checkpoint_epoch_idx.pth" #replace idx with epoch number when saving
 
 class MultiCriteriaGNNModel(torch.nn.Module):
-    def __init__(self, metadata, hidden_dim=64, num_layers=3, heads=4):
+    def __init__(self, metadata, hidden_dim=64, num_layers=3, heads=4, dropout=0.2):
         '''
         metadata: Tuple of (node_types, edge_types) from the heterogeneous graph
         hidden_dim: Dimension of hidden embeddings
         num_layers: Number of GNN layers
         heads: Number of attention heads in GATv2
+        dropout: Dropout rate for GATv2 layers to regularize the Attention mechanism.
         defines a multi-criteria GNN model with three heads:
         1.Activation Head: Classifies operator nodes as active/inactive
         2.Assignment Head: Classifies edges from operators to orders
@@ -36,12 +37,20 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             #note that we use edge_dim=1 because our time/processing features are 1D
             conv_dict = {
                 ('order', 'to', 'order'): GATv2Conv(
-                    hidden_dim, hidden_dim // heads, 
-                    heads=heads, edge_dim=1, add_self_loops=False
+                    hidden_dim, 
+                    hidden_dim // heads, 
+                    heads=heads, 
+                    edge_dim=1, 
+                    add_self_loops=False, 
+                    dropout=dropout
                 ),
                 ('operator', 'assign', 'order'): GATv2Conv(
-                    (hidden_dim, hidden_dim), hidden_dim // heads, 
-                    heads=heads, edge_dim=1, add_self_loops=False
+                    (hidden_dim, hidden_dim), 
+                    hidden_dim // heads, 
+                    heads=heads, 
+                    edge_dim=1, 
+                    add_self_loops=False, 
+                    dropout=dropout
                 ),
 
                 #add reverse edges if the graph is bi-directional or needed for flow
@@ -51,7 +60,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                     hidden_dim // heads, 
                     heads=heads, 
                     edge_dim=1, 
-                    add_self_loops=False
+                    add_self_loops=False, 
+                    dropout=dropout
                 )
             }
             
