@@ -310,6 +310,7 @@ class ScheduleEvaluator:
         data_loader = DataLoader(schedule_dataset, batch_size=self.batch_size, shuffle=False)
         total_epoch_loss = 0.0
         total_epoch_accuracy = 0.0
+        total_epoch_f1 = 0.0
 
         #single heads performance
         act_loss = 0.0
@@ -317,7 +318,10 @@ class ScheduleEvaluator:
         seq_loss = 0.0
         act_accuracy = 0.0
         assign_accuracy = 0.0
-        seq_accuracy = 0.0     
+        seq_accuracy = 0.0  
+        act_f1 = 0.0
+        assign_f1 = 0.0
+        seq_f1 = 0.0   
         act_cm = np.zeros((2, 2), dtype=int)
         assign_cm = np.zeros((2, 2), dtype=int)
         seq_cm = np.zeros((2, 2), dtype=int)
@@ -343,9 +347,12 @@ class ScheduleEvaluator:
                 
                 loss, l_act, l_assign, l_seq = self.weighted_loss(preds, batch, batch.u)
                 measurements = self.calculate_metrics(preds, batch)
+                f1_measurements = self.calc_overall_metrics(preds, batch)
+
                 total_epoch_loss += loss.item()
                 total_epoch_accuracy += sum([measurements['act_acc'], measurements['assign_acc'], measurements['seq_acc']]) / 3.0
-    
+                total_epoch_f1 += f1_measurements['overall_f1']
+
                 #accumulate single head losses
                 act_loss += l_act
                 assign_loss += l_assign
@@ -355,6 +362,11 @@ class ScheduleEvaluator:
                 act_accuracy += measurements['act_acc']
                 assign_accuracy += measurements['assign_acc']
                 seq_accuracy += measurements['seq_acc']
+                
+                #accumulate single head f1 scores
+                act_f1 += f1_measurements['activation']['f1']
+                assign_f1 += f1_measurements['assignment']['f1']
+                seq_f1 += f1_measurements['sequence']['f1']
 
                 #accumulate confusion matrices
                 act_cm += measurements['act_cm']
@@ -373,6 +385,12 @@ class ScheduleEvaluator:
             average_assign_accuracy = assign_accuracy / len(data_loader)
             average_seq_accuracy = seq_accuracy / len(data_loader)
 
+            #compute average f1 scores
+            average_total_f1 = total_epoch_f1 / len(data_loader)
+            average_act_f1 = act_f1 / len(data_loader)
+            average_assign_f1 = assign_f1 / len(data_loader)
+            average_seq_f1 = seq_f1 / len(data_loader)
+
             #compute confusion matrix
             total_cm = act_cm + assign_cm + seq_cm
             row_sums = total_cm.sum(axis=1, keepdims=True)
@@ -387,6 +405,10 @@ class ScheduleEvaluator:
                 'act_accuracy': average_act_accuracy,
                 'assign_accuracy': average_assign_accuracy,
                 'seq_accuracy': average_seq_accuracy,
+                'total_f1': average_total_f1,
+                'act_f1': average_act_f1,
+                'assign_f1': average_assign_f1,
+                'seq_f1': average_seq_f1,
                 'act_cm': act_cm,
                 'assign_cm': assign_cm,
                 'seq_cm': seq_cm,
