@@ -297,3 +297,119 @@ class ScheduleValidator:
         
         return is_valid, report
     
+    def export_schedule_to_json(self, batch, report, filename="schedule.json"):
+        """
+        Exports a valid schedule to json.
+        Requires the 'report' object from 'evaluate_full_feasibility'.
+        """
+        if not report["valid"]:
+            print("Warning: exporting an invalid schedule!")
+
+        #masks and indices
+        chosen_assign = report["masks"]["assign"]
+        chosen_seq = report["masks"]["seq"]
+        
+        #edges
+        assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')]
+        seq_idx = batch.edge_index_dict[('order', 'to', 'order')]
+        
+        #filter chosen edges by masks
+        assign_idxs = assign_idx[:, chosen_assign].cpu().detach().numpy()
+        seq_idxs = seq_idx[:, chosen_seq].cpu().detach().detach().numpy()
+        
+        #map order -> operator
+        order_to_op = {}
+        for i in range(assign_idxs.shape[1]):
+            op, order = int(assign_idxs[0, i]), int(assign_idxs[1, i])
+            order_to_op[order] = op
+            
+        #map order -> next order (adjacency list for sequences)
+        #dict is used, since valid schedule has max 1 out-degree
+        next_order_map = {}
+        for i in range(seq_idxs.shape[1]):
+            u, v = int(seq_idxs[0, i]), int(seq_idxs[1, i])
+            next_order_map[u] = v
+            
+        #group orders by op
+        op_orders = {}
+        for order, op in order_to_op.items():
+            if op not in op_orders: op_orders[op] = set()
+            op_orders[op].add(order)
+            
+        schedule_data = {
+            "metadata": {
+                "num_orders": int(batch['order'].num_nodes),
+                "num_operators": int(batch['operator'].num_nodes),
+                "valid": report["valid"],
+                "schedule_id": batch.schedule_id,
+            },
+            "operators": []
+        }
+        
+        all_mission_ids = batch['order'].global_id.cpu().detach().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().detach().tolist()
+        
+        for op_id, orders in op_orders.items():
+            #build mini-graph for this op
+            targets = set()
+            for u in orders:
+                if u in next_order_map:
+                    v = next_order_map[u]
+                    if v in orders: #ensure consistency in sequencing (should be guaranteed by feasibility checks)
+                        targets.add(v)
+            
+            starts = list(orders - targets)
+            
+            if not starts:
+                #cycle case fallback
+                best_start = list(orders)[0] 
+            elif len(starts) == 1:
+                best_start = starts[0]
+            else:
+                print(f"Multiple start nodes detected for operator {op_id}: {starts}. Choosing one arbitrarily.")
+                best_start = starts[0]
+
+            #sort routes (if multiple disconnected components, effectively multiple routes)
+            routes = []
+            if best_start is not None:
+                route = [0]
+                curr = best_start
+                # infinite loop protection with visited set, since the model might have cycles due to model errors (should be caught in validation, but just in case)
+                # while True: # we will break when no more next node or next node is not in same operator's orders
+                #     route.append(curr)
+                #     if curr in next_order_map and next_order_map[curr] in orders:
+                #         curr = next_order_map[curr]
+                #     else:
+                #         break
+
+                visited = set()
+                while True:
+                    #cycle detection
+                    if curr in visited:
+                        print(f"Cycle detected in export at node {curr}. Breaking.")
+                        route.append(f"{curr} (CYCLE)") 
+                        break
+                        
+                    visited.add(curr)
+                    #route.append(curr) #append order node_index
+                    route.append(all_mission_ids[curr])  #map order node_index -> CD_MISSION
+                    
+                    #move to next
+                    if curr in next_order_map and next_order_map[curr] in orders:
+                        curr = next_order_map[curr]
+                    else:
+                        break #end of chain
+                    
+                routes.append(route)
+                
+            schedule_data["operators"].append({
+                "operator_id": all_operator_ids[op_id], #map operator node_index -> OPERATOR_ID
+                "assigned_orders_count": len(orders),
+                "routes": routes #list of possibile routes (e.g. [[1, 5, 2]])
+            })
+            
+        #save in file
+        with open(filename, 'w') as f:
+            json.dump(schedule_data, f, indent=4)
+        
+        print(f"Schedule exported to {filename}")
