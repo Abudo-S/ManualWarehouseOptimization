@@ -413,3 +413,77 @@ class ScheduleValidator:
             json.dump(schedule_data, f, indent=4)
         
         print(f"Schedule exported to {filename}")
+
+if __name__ == "__main__":
+    #init dataset
+    dataset = GnnScheduleDataset(
+        schedule_dir=SCHEDULE_DIR,
+        mission_base_path=MISSION_BATCH_DIR,
+        edge_base_path=MISSION_BATCH_TRAVEL_DIR,
+        pallet_types_file_path=UDC_TYPES_DIR,
+        fork_path=FORK_LIFTS_DIR
+    )
+
+    sample_data = dataset[0]
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    model = MultiCriteriaGNNModel(
+        metadata=sample_data.metadata(),
+        hidden_dim=64,
+        num_layers=3,
+        heads=4,
+        dropout=0.1
+    ).to(device)
+    
+    model.eval()
+    totals = {"n": 0, "act_f1": 0.0, "assign_f1": 0.0, "seq_f1": 0.0,
+              "feasible": 0, "gap_sum": 0.0}
+    
+    best_thresholds =  {
+        'activation': 0.2209, 
+        'assignment': 0.0457, 
+        'sequence': 0.0918
+    }
+    
+    BATCH_SIZE = 1 #we want to evaluate one instance for coherency with mip solver schedules
+    schedule_evaluator = ScheduleEvaluator(model=model,
+                                        schedule_dataset=dataset,
+                                        batch_size=BATCH_SIZE,
+                                        act_threshold=best_thresholds['activation'],
+                                        assign_threshold=best_thresholds['assignment'],
+                                        seq_threshold=best_thresholds['sequence']
+                                        )
+    
+    loader = DataLoader(schedule_evaluator.schedule_val_dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+    scheduleValidator = ScheduleValidator(
+        act_threshold=best_thresholds['activation'],
+        assign_threshold=best_thresholds['assignment'],
+        seq_threshold=best_thresholds['sequence']
+    )
+    
+    print("Starting Schedule Validation - total batches:", len(loader))
+
+    idx = 0
+    for batch in loader:
+        batch = batch.to(device)
+        batch_dict = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
+
+        out = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict)
+
+        is_valid, report = scheduleValidator.evaluate_full_feasibility(batch, out)
+
+        idx = idx + 1
+        scheduleValidator.export_schedule_to_json(batch, report, filename=f"schedule_batch_{idx}.json")
+        
+        #print(report)
+        if is_valid:
+            print(f"Schedule [{idx}] is Feasible!")
+            #safe to calculate optimality gap using report["masks"]
+            pass
+        else:
+            print(f"Schedule [{idx}] is NOT Feasible!")
+            print(f"Activation Feasibility: {report['act_ok']} with stats {report['act_errs']}")
+
+            if not report["seq_ok"]:
+                print(f"Sequence Invalid: {report['seq_errs']}")
