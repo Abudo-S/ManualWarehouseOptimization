@@ -256,3 +256,44 @@ class ScheduleValidator:
             
         return cleaned_mask
 
+    def evaluate_full_feasibility(self, batch, out):
+        """
+        runs decoder -> feasibility checks -> returns verdict
+        """
+        
+        #decode assignments (fix constraints greedily)
+        chosen_assign = self.decode_assignment_one_per_order(batch, out['assignment'])
+        print(f"Assignment Probabilities (sample): {out['assignment'].view(-1)[:10].cpu().detach().numpy()}")
+
+        #decode sequences (just thresholding for now, hard to greedily fix without solver)
+        chosen_seq = (out['sequence'].view(-1) > self.seq_threshold)
+        chosen_seq = self.resolve_sequence_conflicts(batch, out['sequence'], chosen_seq)
+
+        #feasibility checks
+        #activation consistency
+        act_ok, act_stats = self.check_activation_feasibility(batch, out['activation'], chosen_assign)
+        
+        #sequence consistency
+        seq_ok, seq_stats = self.check_sequence_feasibility(batch, chosen_assign, chosen_seq)
+        
+        #assignment coverage (no unassigned orders)
+        #since decoder enforces 1-per-order, we just check if any were dropped due to low prob
+        total_orders = batch['order'].num_nodes
+        assigned_orders = chosen_assign.sum().item() #assuming 1-to-1 decoder
+        unassigned = total_orders - assigned_orders
+        
+        assign_ok = (unassigned == 0)
+        
+        #report
+        is_valid = (act_ok and seq_ok and assign_ok)
+        
+        report = {
+            "valid": is_valid,
+            "act_ok": act_ok, "act_errs": act_stats,
+            "seq_ok": seq_ok, "seq_errs": seq_stats,
+            "assign_ok": assign_ok, "unassigned": unassigned,
+            "masks": {"assign": chosen_assign, "seq": chosen_seq}  #masks for optimality gap calculation
+        }
+        
+        return is_valid, report
+    
