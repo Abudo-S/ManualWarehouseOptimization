@@ -276,6 +276,9 @@ class GnnDataInstanceBuilder:
 
         data['operator', 'assign', 'order'].y = y_assign
         data['order', 'to', 'order'].y = y_seq
+        
+        #store schedule_id for reference (can be used for comparison/linking back to original data)
+        data.schedule_id = filename.replace('.csv', '') 
 
         return data
 
