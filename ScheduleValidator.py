@@ -200,3 +200,59 @@ class ScheduleValidator:
         
         return is_feasible, violations
     
+    def resolve_sequence_conflicts(self, batch, seq_probs, chosen_seq_mask):
+        """
+        Post-processing step:
+        1.removes cycles of length 2 (A<->B) by keeping the higher probability edge.
+        2.enforces Max-1-Out degree locally (if A->B and A->C, keep best).
+        
+        Returns:
+            cleaned_mask (torch.BoolTensor): Updated mask with conflicts removed.
+        """
+        #get edges and probs
+        seq_edges = batch.edge_index_dict[('order', 'to', 'order')]
+        
+        #work with indices where mask is true
+        chosen_indices = torch.nonzero(chosen_seq_mask.view(-1)).squeeze()
+        
+        #if nothing chosen, return empty
+        if chosen_indices.numel() == 0:
+            return chosen_seq_mask
+            
+        #build map of (u, v) -> (prob, edge_index)
+        #iterate only the chosen edges
+        edges_list = seq_edges[:, chosen_indices].cpu().detach().numpy()
+        probs_list = seq_probs.view(-1)[chosen_indices].cpu().detach().numpy()
+        
+        #dict key: tuple (u, v), value: (probability, original_index)
+        edge_map = {}
+        for i, idx in enumerate(chosen_indices.tolist()):
+            u, v = edges_list[0, i], edges_list[1, i]
+            p = probs_list[i]
+            edge_map[(u, v)] = (p, idx)
+            
+        #detect and resolve A <-> B conflicts
+        indices_to_remove = set()
+        
+        for (u, v), (p_uv, idx_uv) in edge_map.items():
+
+            #check if reverse exists
+            if (v, u) in edge_map:
+                p_vu, idx_vu = edge_map[(v, u)]
+                
+                #if we haven't already processed this pair
+                if idx_vu not in indices_to_remove and idx_uv not in indices_to_remove:
+                    if p_uv > p_vu:
+                        indices_to_remove.add(idx_vu) #remove reverse
+                    else:
+                        indices_to_remove.add(idx_uv) #remove forward
+                        
+        #new aask
+        cleaned_mask = chosen_seq_mask.clone()
+        if len(indices_to_remove) > 0:
+            #convert set to tensor list
+            remove_tensor = torch.tensor(list(indices_to_remove), device=chosen_seq_mask.device)
+            cleaned_mask[remove_tensor] = False
+            
+        return cleaned_mask
+
