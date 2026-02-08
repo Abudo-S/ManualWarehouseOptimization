@@ -1,17 +1,54 @@
-import torch
 import networkx as nx
+import torch
+import numpy as np
+import itertools
+import json
+from sklearn.metrics import precision_recall_curve
+from sklearn.model_selection import KFold
+from torch_geometric.loader import DataLoader
+from ScheduleEvaluator import ScheduleEvaluator
+from MultiCriteriaGNNModel import MultiCriteriaGNNModel
+from GnnScheduleDataset import GnnScheduleDataset
+
+LARGE_SCALE_BATCH_NAME = "Batch9000M" #Batch1000M
+TARGET_MINI_BATCH_SIZE = 10 #number of missions per mini-batch
+LARGE_SCALE_MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}.csv"
+PREPROCESSED_BATCH_DIR = f"./preprocessed/{LARGE_SCALE_BATCH_NAME}/Batch{TARGET_MINI_BATCH_SIZE}M_idx.xlsx" #idx to be replaced cluster idx
+MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
+UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
+MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
+FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
+#MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
+SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
+BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch instances
+
+#default threshold for binary classification accurcy like logistic regression after sigmoid
+#need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
+CLASSIFICATION_THRESHOLD = 0.05
 
 class ScheduleValidator:
-    def __init__(self, batch):
-        self.batch = batch
+    def __init__(self, 
+                 act_threshold=CLASSIFICATION_THRESHOLD, 
+                 assign_threshold=CLASSIFICATION_THRESHOLD, 
+                 seq_threshold=CLASSIFICATION_THRESHOLD):
+        """
+        Initializes the ScheduleValidator with the given batch of data.
+        Args:
+            batch: A PyG Batch object containing the graph data for the scheduling problem.
+            act_threshold (float): Threshold for activation head.
+            assign_threshold (float): Threshold for assignment head.
+            seq_threshold (float): Threshold for sequence head.
+        """
+        self.act_threshold = act_threshold
+        self.assign_threshold = assign_threshold
+        self.seq_threshold = seq_threshold
     
     @torch.no_grad()
     def decode_assignment_one_per_order(self, batch, p_assign):
         """
         Assignment feasibility:
         Decodes the assignment head predictions to select at most one operator for each order.
-         
-         - batch: the input batch containing edge_index_dict for assignment edges
+         - batch: the input batch containing graph data
          - p_assign: predicted probabilities for assignment edges (shape: [num_assign_edges, 1])
         Returns:
          - chosen: boolean mask of shape [num_assign_edges] indicating which edges are selected for
@@ -24,8 +61,8 @@ class ScheduleValidator:
         num_orders = batch['order'].num_nodes
         chosen = torch.zeros(p.numel(), dtype=torch.bool, device=p.device)
 
-        #for each order j, pick the edge (i->j) with max probability
-        #(if you want allow unassigned, only choose if max_p >= thr)
+        #[greedy] for each order j, pick the edge (i->j) with max probability
+        #(if you we want to allow "unassigned", only choose if max_p >= thr)
         max_p = torch.full((num_orders,), -1e9, device=p.device)
         max_e = torch.full((num_orders,), -1, dtype=torch.long, device=p.device)
 
@@ -37,16 +74,63 @@ class ScheduleValidator:
 
         valid_orders = (max_e >= 0)
         chosen[max_e[valid_orders]] = True
+        
         return chosen  #boolean mask over assignment edges
     
+    @torch.no_grad
+    def check_activation_feasibility(self, batch, chosen_act_mask, chosen_assign_mask):
+        """
+        Activation feasibility:
+        Checks consistency between activation head and assignment head.edges
+        - batch: the input batch containing graph data
+        - chosen_act_mask: boolean mask of shape [num_operator_nodes] indicating which operators are
+            predicted active by the activation head.
+        - chosen_assign_mask: boolean mask of shape [num_assign_edges] indicating which assignment edges are selected
+        Returns:
+            is_consistent (bool): True if strict rules are met.
+            stats (dict): Counts of violations.
+        """
+        # 1. Get Assigned Operators
+        # Find which operators have at least one assignment edge selected
+        assign_edge_index = batch.edge_index_dict[('operator', 'assign', 'order')]
+        src_ops = assign_edge_index[0] # Source Operator IDs for all edges
         
+        # Filter only chosen edges
+        active_edges_src = src_ops[chosen_assign_mask]
+        
+        # Get unique operators that have work
+        ops_with_work = torch.unique(active_edges_src)
+        
+        # 2. Get Predicted Active Operators
+        # Convert mask to indices
+        ops_predicted_active = torch.nonzero(chosen_act_mask.view(-1)).squeeze()
+        
+        # 3. Check Rule 1: "Ghost Worker" (Working but not Active)
+        # Every op in ops_with_work MUST be in ops_predicted_active
+        # We use CPU sets for easy difference check
+        set_work = set(ops_with_work.cpu().numpy())
+        set_active = set(ops_predicted_active.cpu().numpy())
+        
+        ghost_workers = set_work - set_active # In Work but NOT in Active
+        
+        # 4. Check Rule 2: "Idle Active" (Active but no Work)
+        # This is usually allowed but wasteful
+        idle_active = set_active - set_work # In Active but NOT in Work
+        
+        is_feasible = (len(ghost_workers) == 0)
+        
+        return is_feasible, {
+            "ghost_workers": len(ghost_workers), # CRITICAL violation
+            "idle_active": len(idle_active)      # Warning (inefficiency)
+        }
+
+    @torch.no_grad
     def check_sequence_feasibility(self, batch, chosen_assign_mask, chosen_seq_mask):
         """
         Sequence feasibility:
         Checks if the chosen sequence edges form valid, acyclic paths consistent 
         with the chosen assignments.
-
-        - batch: the input batch containing edge_index_dict for assignment and sequence edges
+        - batch: the input batch containing edge_index_dict
         - chosen_assign_mask: boolean mask of shape [num_assign_edges] indicating which assignment edges are selected
         - chosen_seq_mask: boolean mask of shape [num_seq_edges] indicating which sequence edges are selected
         Returns:
@@ -90,12 +174,14 @@ class ScheduleValidator:
             if G_seq.in_degree(n) > 1: violations["branching"] += 1
             
         #cross-operator eequencing
-        #i A -> B, they must be done by same operator
+        #if A -> B, they must be done by same operator
         for u, v in G_seq.edges():
             op_u = order_to_op.get(u, -1) #-1 if unassigned
             op_v = order_to_op.get(v, -2)
             
             if op_u != op_v:
+                if op_u == -1 or op_v == -1:
+                    print(f"Warning: Sequence edge ({u}->{v}) involves unassigned order(s) (op_u={op_u}, op_v={op_v})")
                 violations["cross_op_seq"] += 1
                 
         #cycle detection
@@ -113,3 +199,4 @@ class ScheduleValidator:
         is_feasible = (total_violations == 0)
         
         return is_feasible, violations
+    
