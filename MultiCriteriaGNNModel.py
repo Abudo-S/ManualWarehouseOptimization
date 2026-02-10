@@ -201,6 +201,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         }
     
     def save_model(self, save_path=SAVE_MODEL_PATH):
+        print(f"Saving model weights to {save_path}...")
+
         #create checkpoints directory if it doesn't exist
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
@@ -208,23 +210,40 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         torch.save(self.state_dict(), save_path)
 
     def load_model(self, save_path=SAVE_MODEL_PATH):
+        print(f"Loading model weights from {save_path}...")
+        
         #load the model weights
         self.load_state_dict(torch.load(save_path))
         self.eval()
 
     def save_model_in_training(self,
-                               optimizer, 
+                               optimizers:dict, 
                                current_epoch, 
                                current_loss, 
                                save_weights_path=SAVE_MODEL_PATH,
                                save_path=SAVE_MODEL_IN_TRAINING_PATH):
+        """
+        Saves model weights and training state (optimizer states, epoch, loss) to a checkpoint for resuming training later.
+            optimizers: A dictionary of optimizers used in training (e.g., {'trunk_optimizer': optimizer}, ...).
+            current_epoch: The current epoch number (used to identify the checkpoint file).
+            current_loss: The current loss value (for logging and checkpointing).
+            save_weights_path: Path to save the model weights file (used for saving the model architecture and weights).
+            save_path: Path template for the training checkpoint (should include "idx" to be replaced with epoch number).
+        """
+
         #save weights
         self.save_model(save_weights_path)
+
+        #handle both single optimizer (legacy) and dictionary of optimizers (new)
+        if isinstance(optimizers, dict):
+            optimizer_state_dict = {k: v.state_dict() for k, v in optimizers.items()}
+        else:
+            optimizer_state_dict = optimizers.state_dict()
 
         checkpoint = {
             'epoch': current_epoch,
             'model_state_dict': self.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
+            'optimizer_state_dict': optimizer_state_dict, #saves dict or single state
             'loss': current_loss,
             #save hyperparameters so they don't get forgetten them
             'hyperparameters': {
@@ -239,9 +258,18 @@ class MultiCriteriaGNNModel(torch.nn.Module):
 
     def load_model_in_training(self,
                                current_epoch,
-                               optimizer,
+                               optimizers:dict,
                                save_weights_path=SAVE_MODEL_PATH,
                                save_path=SAVE_MODEL_IN_TRAINING_PATH):
+        """
+        Loads model weights and training state (optimizer states, epoch, loss) from a checkpoint for resuming training.
+            current_epoch: The epoch number to load (used to identify the correct checkpoint file).
+            optimizers: A dictionary of optimizers used in training (e.g., {'trunk_optimizer': optimizer}, ...).
+            save_weights_path: Path to the model weights file (used for loading the model architecture and weights).
+            save_path: Path template for the training checkpoint (should include "idx" to be replaced with epoch number).
+        Returns: A tuple containing the optimizers with loaded states, the starting epoch for resuming training, and the loss value at the checkpoint.
+        """
+
         #load weights
         self.load_model(save_weights_path)
 
@@ -250,13 +278,30 @@ class MultiCriteriaGNNModel(torch.nn.Module):
 
         #retrieve states
         self.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        saved_optimizer_states = checkpoint['optimizer_state_dict']
+
+        #load optimizer states
+        if isinstance(optimizers, dict):
+            #verify the checkpoint contains a dictionary of states
+            if not isinstance(saved_optimizer_states, dict):
+                raise TypeError("Checkpoint contains a single optimizer state, but a dictionary of optimizers was provided.")
+                
+            for key, opt in optimizers.items():
+                if key in saved_optimizer_states:
+                    opt.load_state_dict(saved_optimizer_states[key])
+                    print(f"Loaded state for optimizer: {key}")
+                else:
+                    print(f"Warning: Key '{key}' not found in checkpoint optimizer states.")
+        else: #single optimizer
+            optimizers.load_state_dict(saved_optimizer_states)
+
+
         start_epoch = checkpoint['epoch']
         loss = checkpoint['loss']
 
         self.train()
 
-        return optimizer, start_epoch, loss
+        return optimizers, start_epoch, loss
 
 
 
