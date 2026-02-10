@@ -26,7 +26,7 @@ BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch ins
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
 CLASSIFICATION_THRESHOLD = 0.05
 
-class ScheduleValidator:
+class ScheduleDecoderValidator:
     def __init__(self, 
                  act_threshold=CLASSIFICATION_THRESHOLD, 
                  assign_threshold=CLASSIFICATION_THRESHOLD, 
@@ -62,7 +62,7 @@ class ScheduleValidator:
         chosen = torch.zeros(p.numel(), dtype=torch.bool, device=p.device)
 
         #[greedy] for each order j, pick the edge (i->j) with max probability
-        #(if you we want to allow "unassigned", only choose if max_p >= thr)
+        #(if we want to allow "unassigned", only choose if max_p >= thr)
         max_p = torch.full((num_orders,), -1e9, device=p.device)
         max_e = torch.full((num_orders,), -1, dtype=torch.long, device=p.device)
 
@@ -90,38 +90,34 @@ class ScheduleValidator:
             is_consistent (bool): True if strict rules are met.
             stats (dict): Counts of violations.
         """
-        # 1. Get Assigned Operators
-        # Find which operators have at least one assignment edge selected
+        #assigned operators have at least one assignment edge selected
         assign_edge_index = batch.edge_index_dict[('operator', 'assign', 'order')]
-        src_ops = assign_edge_index[0] # Source Operator IDs for all edges
+        src_ops = assign_edge_index[0] #source operator ids for all edges
         
-        # Filter only chosen edges
+        #only chosen edges
         active_edges_src = src_ops[chosen_assign_mask]
         
-        # Get unique operators that have work
+        #unique operators that have work
         ops_with_work = torch.unique(active_edges_src)
         
-        # 2. Get Predicted Active Operators
-        # Convert mask to indices
+        #indices of predicted active operators
         ops_predicted_active = torch.nonzero(chosen_act_mask.view(-1)).squeeze()
         
-        # 3. Check Rule 1: "Ghost Worker" (Working but not Active)
-        # Every op in ops_with_work MUST be in ops_predicted_active
-        # We use CPU sets for easy difference check
+        #ghost worker (working but not active)
+        #every op in ops_with_work must be in ops_predicted_active
         set_work = set(ops_with_work.cpu().numpy())
         set_active = set(ops_predicted_active.cpu().numpy())
         
-        ghost_workers = set_work - set_active # In Work but NOT in Active
+        ghost_workers = set_work - set_active
         
-        # 4. Check Rule 2: "Idle Active" (Active but no Work)
-        # This is usually allowed but wasteful
-        idle_active = set_active - set_work # In Active but NOT in Work
+        #idle activate operators (active but no work)
+        idle_active = set_active - set_work
         
-        is_feasible = (len(ghost_workers) == 0)
+        is_feasible = (len(ghost_workers) == 0) #in work but not ative = infeasible violation
         
         return is_feasible, {
-            "ghost_workers": len(ghost_workers), # CRITICAL violation
-            "idle_active": len(idle_active)      # Warning (inefficiency)
+            "ghost_workers": len(ghost_workers), #violation
+            "idle_active": len(idle_active) #(inefficient activations, not strictly infeasible but good to track)
         }
 
     @torch.no_grad
@@ -427,23 +423,37 @@ if __name__ == "__main__":
     sample_data = dataset[0]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = MultiCriteriaGNNModel(
-        metadata=sample_data.metadata(),
-        hidden_dim=64,
-        num_layers=3,
-        heads=4,
-        dropout=0.1
-    ).to(device)
-    
-    model.eval()
-    totals = {"n": 0, "act_f1": 0.0, "assign_f1": 0.0, "seq_f1": 0.0,
-              "feasible": 0, "gap_sum": 0.0}
-    
+        #tuned hyperparameters 
+    best_conf = {
+        'batch_size': 32,
+        'hidden_dim': 64,
+        'heads': 4,
+        'dropout': 0.1,
+        'lr_trunk': 0.001,
+        'lr_activation': 0.01,
+        'lr_assignment': 0.0001,
+        'lr_sequence': 0.0005
+    }
+
+    #tuned thresholds for feasibility validation 
     best_thresholds =  {
-        'activation': 0.2209, 
-        'assignment': 0.0457, 
+        'activation': 0.2209,
+        'assignment': 0.0457,
         'sequence': 0.0918
     }
+
+    model = MultiCriteriaGNNModel(
+        metadata=sample_data.metadata(),
+        hidden_dim=best_conf['hidden_dim'],
+        num_layers=3,
+        heads=best_conf['heads'],
+        dropout=best_conf['dropout']
+    ).to(device)
+    
+    model.load_model() #load pre-trained model weights
+
+    totals = {"n": 0, "act_f1": 0.0, "assign_f1": 0.0, "seq_f1": 0.0,
+              "feasible": 0, "gap_sum": 0.0}
     
     BATCH_SIZE = 1 #we want to evaluate one instance for coherency with mip solver schedules
     schedule_evaluator = ScheduleEvaluator(model=model,
@@ -456,7 +466,7 @@ if __name__ == "__main__":
     
     loader = DataLoader(schedule_evaluator.schedule_val_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    scheduleValidator = ScheduleValidator(
+    scheduleValidator = ScheduleDecoderValidator(
         act_threshold=best_thresholds['activation'],
         assign_threshold=best_thresholds['assignment'],
         seq_threshold=best_thresholds['sequence']
@@ -474,7 +484,7 @@ if __name__ == "__main__":
         is_valid, report = scheduleValidator.evaluate_full_feasibility(batch, out)
 
         idx = idx + 1
-        scheduleValidator.export_schedule_to_json(batch, report, filename=f"schedule_batch_{idx}.json")
+        scheduleValidator.export_schedule_to_json(batch, report, filename=f"predicted_{batch.schedule_id}.json")
         
         #print(report)
         if is_valid:
