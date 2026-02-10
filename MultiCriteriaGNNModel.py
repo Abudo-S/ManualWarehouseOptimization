@@ -24,7 +24,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        
+        self.heads = heads
+        self.dropout = dropout
+
         #node encoders (project raw features to hidden dim)
         self.order_lin = Linear(10, hidden_dim) # mission features: 'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'FROM_X', 'FROM_Y', 'FROM_Z','TO_X', 'TO_Y', 'TO_Z'
         self.op_lin = Linear(7, hidden_dim) # operator features: 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
