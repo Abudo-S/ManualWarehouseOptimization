@@ -1,6 +1,7 @@
 import networkx as nx
 import torch
 import numpy as np
+import os
 import itertools
 import json
 from sklearn.metrics import precision_recall_curve
@@ -20,6 +21,7 @@ MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batc
 FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
+PREDICTED_SCHEDULE_DIR = f"./predicted_schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch instances
 
 #default threshold for binary classification accurcy like logistic regression after sigmoid
@@ -420,11 +422,14 @@ class ScheduleDecoderValidator:
                 "routes": routes
             })
             
+        #ensure output directory exists
+        os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
+
         #save schedule
-        with open(filename, 'w') as f:
+        with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
             json.dump(schedule_data, f, indent=4)
         
-        print(f"Schedule exported to {filename}")
+        print(f"Schedule exported with name: {filename}")
 
 
 if __name__ == "__main__":
@@ -501,7 +506,7 @@ if __name__ == "__main__":
         is_valid, report = scheduleValidator.evaluate_full_feasibility(batch, out)
 
         idx = idx + 1
-        scheduleValidator.export_schedule_to_json2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        scheduleValidator.export_schedule_to_json(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         
         #print(report)
         if is_valid:
