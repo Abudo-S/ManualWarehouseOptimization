@@ -243,7 +243,7 @@ class ScheduleDecoderValidator:
                     else:
                         indices_to_remove.add(idx_uv) #remove forward
                         
-        #new aask
+        #new mask
         cleaned_mask = chosen_seq_mask.clone()
         if len(indices_to_remove) > 0:
             #convert set to tensor list
@@ -259,7 +259,7 @@ class ScheduleDecoderValidator:
         
         #decode assignments (fix constraints greedily)
         chosen_assign = self.decode_assignment_one_per_order(batch, out['assignment'])
-        print(f"Assignment Probabilities (sample): {out['assignment'].view(-1)[:10].cpu().detach().numpy()}")
+        #print(f"Assignment Probabilities (sample): {out['assignment'].view(-1)[:10].cpu().detach().numpy()}")
 
         #decode sequences (just thresholding for now, hard to greedily fix without solver)
         chosen_seq = (out['sequence'].view(-1) > self.seq_threshold)
@@ -293,122 +293,139 @@ class ScheduleDecoderValidator:
         
         return is_valid, report
     
-    def export_schedule_to_json(self, batch, report, filename="schedule.json"):
+    @torch.no_grad()
+    def export_schedule_to_json(self, batch, report, out, filename="schedule.json"):
         """
-        Exports a valid schedule to json.
-        Requires the 'report' object from 'evaluate_full_feasibility'.
+        Exports a valid schedule to json using cluster-first greedy decoding.
+        Uses assignments from 'report' to cluster orders by operator.
+        Within each cluster, greedily(high seq probs) navigates sequence edges using probabilities from 'out'.
         """
         if not report["valid"]:
             print("Warning: exporting an invalid schedule!")
+        
+        #assign & seq probs
+        p_assign = out['assignment'].view(-1).cpu().numpy()
+        p_seq = out['sequence'].view(-1).cpu().numpy()
+        
+        #edge indices (cpu for faster list processing)
+        assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')].cpu().numpy()
+        seq_idx = batch.edge_index_dict[('order', 'to', 'order')].cpu().numpy()
+        
+        #use the pre-validated mask
+        chosen_assign_mask = report["masks"]["assign"].cpu().numpy()
+        
+        #map: order_id -> (operator id, Aassignment prob)
+        op_clusters = {} #op_id -> list of order ids
+        order_assign_data = {} #order_id -> (op_id, prob)
 
-        #masks and indices
-        chosen_assign = report["masks"]["assign"]
-        chosen_seq = report["masks"]["seq"]
+        #iterate chosen assignments, chosen_assign_mask aligns with assign_idx columns
+        chosen_indices = np.where(chosen_assign_mask)[0]
         
-        #edges
-        assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')]
-        seq_idx = batch.edge_index_dict[('order', 'to', 'order')]
-        
-        #filter chosen edges by masks
-        assign_idxs = assign_idx[:, chosen_assign].cpu().detach().numpy()
-        seq_idxs = seq_idx[:, chosen_seq].cpu().detach().detach().numpy()
-        
-        #map order -> operator
-        order_to_op = {}
-        for i in range(assign_idxs.shape[1]):
-            op, order = int(assign_idxs[0, i]), int(assign_idxs[1, i])
-            order_to_op[order] = op
+        for idx in chosen_indices:
+            op = int(assign_idx[0, idx])
+            order = int(assign_idx[1, idx])
+            prob = float(p_assign[idx])
             
-        #map order -> next order (adjacency list for sequences)
-        #dict is used, since valid schedule has max 1 out-degree
-        next_order_map = {}
-        for i in range(seq_idxs.shape[1]):
-            u, v = int(seq_idxs[0, i]), int(seq_idxs[1, i])
-            next_order_map[u] = v
+            if op not in op_clusters: op_clusters[op] = []
+            op_clusters[op].append(order)
             
-        #group orders by op
-        op_orders = {}
-        for order, op in order_to_op.items():
-            if op not in op_orders: op_orders[op] = set()
-            op_orders[op].add(order)
+            order_assign_data[order] = (op, prob)
+            
+        #build weighted sequence adjacency for each order (for greedy routing)
+        #we need quick access to: neighbors of u, sorted by prob desc
+        seq_adj = {}
+        for i in range(seq_idx.shape[1]):
+            u, v = int(seq_idx[0, i]), int(seq_idx[1, i])
+            prob = float(p_seq[i])
+            
+            if u not in seq_adj: seq_adj[u] = []
+            seq_adj[u].append((v, prob))
+            
+        #sort neighbors for greedy picking
+        for u in seq_adj:
+            seq_adj[u].sort(key=lambda x: x[1], reverse=True)
             
         schedule_data = {
             "metadata": {
                 "num_orders": int(batch['order'].num_nodes),
                 "num_operators": int(batch['operator'].num_nodes),
                 "valid": report["valid"],
-                "schedule_id": batch.schedule_id,
+                "schedule_id": getattr(batch, 'schedule_id', 'unknown'),
             },
             "operators": []
         }
         
-        all_mission_ids = batch['order'].global_id.cpu().detach().tolist()
-        all_operator_ids = batch['operator'].global_id.cpu().detach().tolist()
-        
-        for op_id, orders in op_orders.items():
-            #build mini-graph for this op
-            targets = set()
-            for u in orders:
-                if u in next_order_map:
-                    v = next_order_map[u]
-                    if v in orders: #ensure consistency in sequencing (should be guaranteed by feasibility checks)
-                        targets.add(v)
-            
-            starts = list(orders - targets)
-            
-            if not starts:
-                #cycle case fallback
-                best_start = list(orders)[0] 
-            elif len(starts) == 1:
-                best_start = starts[0]
-            else:
-                print(f"Multiple start nodes detected for operator {op_id}: {starts}. Choosing one arbitrarily.")
-                best_start = starts[0]
+        #global ids for export
+        all_mission_ids = batch['order'].global_id.cpu().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().tolist()
 
-            #sort routes (if multiple disconnected components, effectively multiple routes)
+        for op_idx, orders in op_clusters.items():
+            if not orders: continue
+            
+            orders_set = set(orders)
+            real_op_id = all_operator_ids[op_idx]
+            
+            #heuristic: pick order with highest assignment prob
+            #(logic: "best fit" for the operator is likely the anchor/first task)
+            
+            #sort orders by assignment prob desc
+            sorted_orders = sorted(orders, key=lambda o: order_assign_data[o][1], reverse=True)
+            
+            #consume orders from the set as we route them
+            unvisited = orders_set.copy()
             routes = []
-            if best_start is not None:
-                route = [0]
-                curr = best_start
-                # infinite loop protection with visited set, since the model might have cycles due to model errors (should be caught in validation, but just in case)
-                # while True: # we will break when no more next node or next node is not in same operator's orders
-                #     route.append(curr)
-                #     if curr in next_order_map and next_order_map[curr] in orders:
-                #         curr = next_order_map[curr]
-                #     else:
-                #         break
-
-                visited = set()
-                while True:
-                    #cycle detection
-                    if curr in visited:
-                        print(f"Cycle detected in export at node {curr}. Breaking.")
-                        route.append(f"{curr} (CYCLE)") 
+            
+            #while we have orders left to route
+            while unvisited:
+                #pick best start from remaining unvisited
+                #intersection of sorted_orders and unvisited
+                start_node = None
+                for cand in sorted_orders:
+                    if cand in unvisited:
+                        start_node = cand
                         break
-                        
-                    visited.add(curr)
-                    #route.append(curr) #append order node_index
-                    route.append(all_mission_ids[curr])  #map order node_index -> CD_MISSION
-                    
-                    #move to next
-                    if curr in next_order_map and next_order_map[curr] in orders:
-                        curr = next_order_map[curr]
-                    else:
-                        break #end of chain
-                    
-                routes.append(route)
                 
+                if start_node is None: break #should not happen
+                
+                #greedy route generation
+                route = []
+                curr = start_node
+                
+                while True:
+                    unvisited.discard(curr)
+                    route.append(all_mission_ids[curr])
+                    
+                    #fFind best next step
+                    #edge (curr -> next) exists & next is in 'unvisited' cluster
+                    best_next = None
+                    if curr in seq_adj:
+                        for neighbor, prob in seq_adj[curr]:
+                            if neighbor in unvisited:
+                                best_next = neighbor
+                                break #found best valid neighbor
+                    
+                    if best_next is not None:
+                        curr = best_next
+                    else:
+                        #dead end in this cluster
+                        break
+                
+                routes.append(route)
+            
+            #add operator section
             schedule_data["operators"].append({
-                "operator_id": all_operator_ids[op_id], #map operator node_index -> OPERATOR_ID
+                "operator_id": real_op_id,
+                #"internal_idx": int(op_idx),
                 "assigned_orders_count": len(orders),
-                "routes": routes #list of possibile routes (e.g. [[1, 5, 2]])
+                "routes": routes
             })
             
-        #save in file
+        #save schedule
         with open(filename, 'w') as f:
             json.dump(schedule_data, f, indent=4)
         
         print(f"Schedule exported to {filename}")
+
 
 if __name__ == "__main__":
     #init dataset
@@ -423,7 +440,7 @@ if __name__ == "__main__":
     sample_data = dataset[0]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        #tuned hyperparameters 
+    #tuned hyperparameters 
     best_conf = {
         'batch_size': 32,
         'hidden_dim': 64,
@@ -484,7 +501,7 @@ if __name__ == "__main__":
         is_valid, report = scheduleValidator.evaluate_full_feasibility(batch, out)
 
         idx = idx + 1
-        scheduleValidator.export_schedule_to_json(batch, report, filename=f"predicted_{batch.schedule_id}.json")
+        scheduleValidator.export_schedule_to_json2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         
         #print(report)
         if is_valid:
