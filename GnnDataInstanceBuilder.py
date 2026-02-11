@@ -132,9 +132,12 @@ class GnnDataInstanceBuilder:
         ops_scaled = scaler.fit_transform(op_feats_raw)
         x_ops = torch.tensor(ops_scaled, dtype=torch.float)
 
-        BASE_MISSION = [0 for _ in range(len(mission_batch_df_scaled.columns))]
-        df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
-    
+        #for now we exclude the base node from the graph (mission_id = 0) since it doesn't have real features and can cause numerical instability.
+        #it can't be assigned to multiple operators in the same route as we need, so it doesn't add much value to the learning process.
+        # BASE_MISSION = [0 for _ in range(len(mission_batch_df_scaled.columns))]
+        # df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
+        df_missions_batch_with_base = mission_batch_df_scaled.copy() #keep base node out for now
+        
         parameter_data_loader = ParameterDataLoader(
             mission_batch_df=mission_batch_df_scaled,
             mission_batch_with_base_df=df_missions_batch_with_base, 
