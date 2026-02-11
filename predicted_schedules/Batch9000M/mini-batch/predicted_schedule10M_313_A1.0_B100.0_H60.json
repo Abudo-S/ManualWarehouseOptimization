@@ -1,0 +1,36 @@
+{
+    "metadata": {
+        "num_orders": 8,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": [
+            "schedule10M_313_A1.0_B100.0_H60"
+        ]
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 6,
+            "routes": [
+                [
+                    3879153,
+                    3878173,
+                    3878196,
+                    3878241,
+                    3881064,
+                    3888128
+                ]
+            ]
+        },
+        {
+            "operator_id": 3,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    3878383,
+                    3883142
+                ]
+            ]
+        }
+    ]
+}
