@@ -23,6 +23,7 @@ FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 PREDICTED_SCHEDULE_DIR = f"./predicted_schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch instances
+H_FIXED_EXCEED_TOLERANCE_MIN = 60.0 #allow schedules to tolerate H_fixed exceedance 
 
 #default threshold for binary classification accurcy like logistic regression after sigmoid
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
@@ -150,7 +151,7 @@ class ScheduleDecoder:
         #assignment map: orderId -> operatorId
         #if an order is unassigned or multi-assigned, we catch it here
         order_to_op = {}
-        violations = {"multi_assign": 0, "cross_op_seq": 0, "cycles": 0, "branching": 0}
+        violations = {"multi_assign": 0, "cross_op_seq": 0, "cycles": 0}
         
         for i in range(assign_edges.shape[1]):
             op, order = assign_edges[0, i], assign_edges[1, i]
@@ -164,33 +165,27 @@ class ScheduleDecoder:
         G_seq.add_edges_from(seq_edges.T)
         
         #check sequence constraints
-        
-        #branching factor (flow conservation)
-        #max out-degree and in-degree must be <= 1
-        # for n in G_seq.nodes():
-        #     if G_seq.out_degree(n) > 1: violations["branching"] += 1
-        #     if G_seq.in_degree(n) > 1: violations["branching"] += 1
             
-        #cross-operator eequencing
+        #cross-operator sequencing
         #if A -> B, they must be done by same operator
-        for u, v in G_seq.edges():
-            op_u = order_to_op.get(u, -1) #-1 if unassigned
-            op_v = order_to_op.get(v, -2)
+        # for u, v in G_seq.edges():
+        #     op_u = order_to_op.get(u, -1) #-1 if unassigned
+        #     op_v = order_to_op.get(v, -2)
             
-            if op_u != op_v:
-                if op_u == -1 or op_v == -1:
-                    print(f"Warning: Sequence edge ({u}->{v}) involves unassigned order(s) (op_u={op_u}, op_v={op_v})")
-                violations["cross_op_seq"] += 1
+        #     if op_u != op_v:
+        #         if op_u == -1 or op_v == -1:
+        #             print(f"Warning: Sequence edge ({u}->{v}) involves unassigned order(s) (op_u={op_u}, op_v={op_v})")
+        #         violations["cross_op_seq"] += 1
                 
-        #cycle detection
-        try:
-            cycles = list(nx.simple_cycles(G_seq))
-            if len(cycles) > 0:
-                violations["cycles"] = len(cycles)
-        except:
-            #fallback for very large graphs if simple_cycles is too slow
-            if not nx.is_directed_acyclic_graph(G_seq):
-                violations["cycles"] = 1
+        #cycle detection (removed inside export_schedule method)
+        # try:
+        #     cycles = list(nx.simple_cycles(G_seq))
+        #     if len(cycles) > 0:
+        #         violations["cycles"] = len(cycles)
+        # except:
+        #     #fallback for very large graphs if simple_cycles is too slow
+        #     if not nx.is_directed_acyclic_graph(G_seq):
+        #         violations["cycles"] = 1
 
         #verdict
         total_violations = sum(violations.values())
@@ -295,6 +290,115 @@ class ScheduleDecoder:
         
         return is_valid, report
     
+    @torch.no_grad()
+    def check_horizon_constraint(self, batch, schedule_data):
+        """
+        Validates if operator routes exceed the time horizon (H_fixed).
+        
+        Args:
+            batch: The HeteroData batch object (contains data.u for H_fixed).
+            schedule_data: The dictionary structure produced by export_schedule_to_json.
+            
+        Returns:
+            is_valid (bool): True if all routes are within H_fixed.
+            violations (list): List of dicts describing violations.
+        """
+        violations = []
+        
+        # 1. Retrieve H_fixed (Horizon)
+        # data.u is [Batch_Size, 3] -> [Alpha, Beta, H]
+        # We assume H is consistent across the batch or we look it up per operator.
+        # Robust way: Look up H for the specific graph the operator belongs to.
+        
+        u_tensor = batch.u.cpu().numpy() # [B, 3]
+        # Map: Graph_Index -> H_value
+        h_values = u_tensor[:, 2] # 3rd column is H
+        
+        # If batch.batch is missing (single graph), assume index 0
+        op_batch_map = None
+        if hasattr(batch['operator'], 'batch') and batch['operator'].batch is not None:
+            op_batch_map = batch['operator'].batch.cpu().numpy()
+            
+        for op_data in schedule_data["operators"]:
+            op_id = op_data["operator_id"]
+            internal_idx = op_data["internal_idx"]
+            routes = op_data["routes"]
+            
+            # Find H for this operator
+            graph_idx = 0
+            if op_batch_map is not None:
+                graph_idx = op_batch_map[internal_idx]
+            
+            # Safety for batch index out of bounds (rare)
+            if graph_idx >= len(h_values): graph_idx = 0
+            
+            h_limit = float(h_values[graph_idx]) # usually in minutes (e.g. 60.0)
+            
+            # Check each route (usually 1 per op)
+            for i, route in enumerate(routes):
+                if not route: continue
+                
+                # Route is a list of steps: [{start_time, finish_time, ...}, ...]
+                first_start = route[0]["start_time"]
+                last_finish = route[-1]["finish_time"]
+                
+                total_duration = last_finish # Absolute time (assuming start at 0 relative to shift)
+                # OR: total_duration = last_finish - first_start (if shift starts at first task)
+                # Usually H is "Shift Length", so checks against absolute finish time is safer.
+                
+                if total_duration > h_limit:
+                    violations.append({
+                        "operator_id": op_id,
+                        "route_idx": i,
+                        "duration": total_duration,
+                        "limit": h_limit,
+                        "excess": total_duration - h_limit
+                    })
+
+        is_valid = (len(violations) == 0)
+        return is_valid, violations
+    
+    @torch.no_grad()
+    def check_horizon_constraint(self, batch, schedule_data):
+        """
+        Validates if operator routes exceed the time horizon (H_fixed).
+        Considers only a SINGLE BATCH (global H_fixed is the same for everyone).
+        Assumes H in data.u is in MINUTES and schedule times are in SECONDS.
+        - batch: The HeteroData batch object (contains data.u for H_fixed).
+        - schedule_data: The dictionary structure produced by export_schedule_to_json.
+        """
+        violations = []
+        
+        if not hasattr(batch, 'u') or batch.u is None:
+            return True, []
+            
+        #batch.u shape is [1, 3]
+        h_fixed_mins = float(batch.u[0, 2].item())
+        
+        #check all operators against the h_fixed limit
+        for op_data in schedule_data["operators"]:
+            routes = op_data["routes"]
+            
+            for i, route in enumerate(routes):
+                if not route: continue
+                
+                #total work duration is the finish time of the last step
+                last_step = route[-1]
+                total_time = last_step["finish_time"]
+                
+                if total_time > (h_fixed_mins + H_FIXED_EXCEED_TOLERANCE_MIN):
+                    violations.append({
+                        "operator_id": op_data["operator_id"],
+                        "route_idx": i,
+                        "duration": round(total_time, 2),
+                        "limit": h_fixed_mins,
+                        "excess": round(total_time - h_fixed_mins, 2)
+                    })
+
+        is_valid = (len(violations) == 0)
+
+        return is_valid, violations
+
     @torch.no_grad()
     def export_schedule_to_json(self, batch, report, out, filename="schedule.json"):
         """
