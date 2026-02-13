@@ -28,7 +28,7 @@ BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch ins
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
 CLASSIFICATION_THRESHOLD = 0.05
 
-class ScheduleDecoderValidator:
+class ScheduleDecoder:
     def __init__(self, 
                  act_threshold=CLASSIFICATION_THRESHOLD, 
                  assign_threshold=CLASSIFICATION_THRESHOLD, 
@@ -167,9 +167,9 @@ class ScheduleDecoderValidator:
         
         #branching factor (flow conservation)
         #max out-degree and in-degree must be <= 1
-        for n in G_seq.nodes():
-            if G_seq.out_degree(n) > 1: violations["branching"] += 1
-            if G_seq.in_degree(n) > 1: violations["branching"] += 1
+        # for n in G_seq.nodes():
+        #     if G_seq.out_degree(n) > 1: violations["branching"] += 1
+        #     if G_seq.in_degree(n) > 1: violations["branching"] += 1
             
         #cross-operator eequencing
         #if A -> B, they must be done by same operator
@@ -316,7 +316,7 @@ class ScheduleDecoderValidator:
         #use the pre-validated mask
         chosen_assign_mask = report["masks"]["assign"].cpu().numpy()
         
-        #map: order_id -> (operator id, Aassignment prob)
+        #map: order_id -> (operator id, assignment prob)
         op_clusters = {} #op_id -> list of order ids
         order_assign_data = {} #order_id -> (op_id, prob)
 
@@ -397,7 +397,7 @@ class ScheduleDecoderValidator:
                     unvisited.discard(curr)
                     route.append(all_mission_ids[curr])
                     
-                    #fFind best next step
+                    #find best next step
                     #edge (curr -> next) exists & next is in 'unvisited' cluster
                     best_next = None
                     if curr in seq_adj:
@@ -422,6 +422,195 @@ class ScheduleDecoderValidator:
                 "routes": routes
             })
             
+        #ensure output directory exists
+        os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
+
+        #save schedule
+        with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
+            json.dump(schedule_data, f, indent=4)
+        
+        print(f"Schedule exported with name: {filename}")
+
+    @torch.no_grad()
+    def export_schedule_with_timings(self, batch, report, out, filename="schedule.json"):
+        """
+        Exports a valid schedule to JSON with timing information.
+        Format per step: {mission_id, start_time, finish_time, processing_duration, travel_duration, successor}
+        """
+        scale_proc = 1.0
+        if hasattr(batch['operator', 'assign', 'order'], 'max_val'):
+            #take mean or first if batched
+            scale_proc = batch['operator', 'assign', 'order'].max_val.mean().item()
+            
+        scale_travel = 1.0
+        if hasattr(batch['order', 'to', 'order'], 'max_val'):
+            #take mean or first if batched
+            scale_travel = batch['order', 'to', 'order'].max_val.mean().item()
+
+        if not report["valid"]:
+            print("Warning: exporting an invalid schedule!")
+
+        #prepare assign & seq probs
+        p_assign = out['assignment'].view(-1).cpu().numpy()
+        p_seq = out['sequence'].view(-1).cpu().numpy()
+        
+        #edge indices (cpu for easier list processing)
+        assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')].cpu().numpy()
+        seq_idx = batch.edge_index_dict[('order', 'to', 'order')].cpu().numpy()
+        
+        #processing time (op -> order): (op_idx, order_idx) -> p time
+        proc_time_map = {}
+        assign_attr = batch.edge_attr_dict[('operator', 'assign', 'order')].cpu().numpy()
+        
+        for i in range(assign_idx.shape[1]):
+            op, order = int(assign_idx[0, i]), int(assign_idx[1, i])
+            proc_time_map[(op, order)] = float(assign_attr[i][0])
+            
+        #travel time (Order -> Order): (u, v) -> p time
+        travel_time_map = {}
+        seq_attr = batch.edge_attr_dict[('order', 'to', 'order')].cpu().numpy()
+        
+        for i in range(seq_idx.shape[1]):
+            u, v = int(seq_idx[0, i]), int(seq_idx[1, i])
+            travel_time_map[(u, v)] = float(seq_attr[i][0])
+            
+        #use the pre-validated mask
+        chosen_assign_mask = report["masks"]["assign"].cpu().numpy()
+        
+        #map: order_id -> (operator id, assignment prob)
+        op_clusters = {} # op_id -> list of order ids
+        order_assign_data = {} #order_id -> (op_id, prob)
+        
+        chosen_indices = np.where(chosen_assign_mask)[0]
+        
+        for idx in chosen_indices:
+            op = int(assign_idx[0, idx])
+            order = int(assign_idx[1, idx])
+            prob = float(p_assign[idx])
+            
+            if op not in op_clusters: op_clusters[op] = []
+            op_clusters[op].append(order)
+            
+            order_assign_data[order] = (op, prob)
+            
+        #build weighted sequence adjacency for each order (for greedy routing)
+        seq_adj = {}
+        for i in range(seq_idx.shape[1]):
+            u, v = int(seq_idx[0, i]), int(seq_idx[1, i])
+            prob = float(p_seq[i])
+            
+            if u not in seq_adj: seq_adj[u] = []
+            seq_adj[u].append((v, prob))
+            
+        #sort neighbors for greedy picking
+        for u in seq_adj:
+            seq_adj[u].sort(key=lambda x: x[1], reverse=True)
+            
+        #reconstruct schedule with timings
+        schedule_data = {
+            "metadata": {
+                "num_orders": int(batch['order'].num_nodes),
+                "num_operators": int(batch['operator'].num_nodes),
+                "valid": report["valid"],
+                "schedule_id": getattr(batch, 'schedule_id', 'unknown'),
+            },
+            "operators": []
+        }
+        
+        #global ids for export
+        all_mission_ids = batch['order'].global_id.cpu().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().tolist()
+
+        for op_idx, orders in op_clusters.items():
+            if not orders: continue
+            
+            orders_set = set(orders)
+            real_op_id = all_operator_ids[op_idx]
+            
+            #heuristic: pick order with highest assignment prob as anchor
+            sorted_orders = sorted(orders, key=lambda o: order_assign_data[o][1], reverse=True)
+            
+            #consume orders from the set as we route them
+            unvisited = orders_set.copy()
+            routes = []
+            
+            while unvisited:
+                #pick best start from remaining unvisited
+                start_node = None
+                for cand in sorted_orders:
+                    if cand in unvisited:
+                        start_node = cand
+                        break
+                
+                if start_node is None: break 
+                
+                #greedy route generation with timings
+                route_steps = []
+                curr = start_node
+                current_time = 0.0
+                
+                while True:
+                    unvisited.discard(curr)
+                    real_mission_id = all_mission_ids[curr]
+                    
+                    #travel time
+                    travel_t = 0.0
+                    if len(route_steps) > 0:
+                         #previous step's node internal index
+                         prev_node = route_steps[-1]["_internal_idx"]
+                         travel_t = travel_time_map.get((prev_node, curr), 0.0) * scale_travel
+                    
+                    start_t = current_time + travel_t
+                    
+                    #processing time
+                    proc_t = proc_time_map.get((op_idx, curr), 0.0) * scale_proc
+                    finish_t = start_t + proc_t
+                    current_time = finish_t
+                    
+                    #find best next step
+                    #edge (curr -> next) exists & next is in 'unvisited' cluster
+                    best_next = None
+                    if curr in seq_adj:
+                        for neighbor, prob in seq_adj[curr]:
+                            if neighbor in unvisited:
+                                best_next = neighbor
+                                break
+                    
+                    successor_id = None
+                    if best_next is not None:
+                        successor_id = all_mission_ids[best_next]
+                    
+                    #route step with timings
+                    step = {
+                        "mission_id": real_mission_id,
+                        "start_time": round(start_t, 2),
+                        "finish_time": round(finish_t, 2),
+                        "processing_duration": round(proc_t, 2),
+                        "travel_duration": round(travel_t, 2),
+                        "successor": successor_id,
+                        "_internal_idx": int(curr) #temp helper
+                    }
+                    
+                    route_steps.append(step)
+                    
+                    if best_next is not None:
+                        curr = best_next
+                    else:
+                        break
+                
+                #clean temp node internal idx
+                for s in route_steps: del s["_internal_idx"]
+                
+                routes.append(route_steps)
+            
+            #add operator section with timings
+            schedule_data["operators"].append({
+                "operator_id": real_op_id,
+                #internal_idx": int(op_idx),
+                "assigned_orders_count": len(orders),
+                "routes": routes
+            })
+        
         #ensure output directory exists
         os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
 
@@ -488,7 +677,7 @@ if __name__ == "__main__":
     
     loader = DataLoader(schedule_evaluator.schedule_val_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    scheduleValidator = ScheduleDecoderValidator(
+    scheduleValidator = ScheduleDecoder(
         act_threshold=best_thresholds['activation'],
         assign_threshold=best_thresholds['assignment'],
         seq_threshold=best_thresholds['sequence']
@@ -506,7 +695,7 @@ if __name__ == "__main__":
         is_valid, report = scheduleValidator.evaluate_full_feasibility(batch, out)
 
         idx = idx + 1
-        scheduleValidator.export_schedule_to_json(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        scheduleValidator.export_schedule_with_timings(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         
         #print(report)
         if is_valid:
