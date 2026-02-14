@@ -23,8 +23,17 @@ ALPHA = 1.0 #makespan weight
 BETA = 1000.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
+#define a global time scale (e.g., standard 8-hour shift in minutes)
+#It must be consistent across training, validation, and decoding
+#used to normalize time features (H_fixed, processing time, travel time) to [0,1] range 
+#for better training stability, especially when using attention mechanisms in GNNs that can be sensitive to feature scale.
+GLOBAL_TIME_SCALE_FACTOR = 480.0 
+
 class GnnDataInstanceBuilder:
     
+    def __init__(self, global_time_scale_factor=GLOBAL_TIME_SCALE_FACTOR):
+        self.global_time_scale_factor = global_time_scale_factor
+
     def parse_filename_params(self, filename):
         """
         Extracts Global Parameters A (alpha), B (beta), H (H_fixed) from  schedule_file filename.
@@ -161,13 +170,17 @@ class GnnDataInstanceBuilder:
         data['order'].global_id = torch.tensor(mission_ids, dtype=torch.long)
         data['operator'].global_id = torch.tensor(op_ids, dtype=torch.long)
 
-        #normalize alpha and beta to avoid gradient numerical instability
+        #normalize alpha, beta and h_fixed to avoid gradient numerical instability
         alpha = alpha / (alpha + beta)
         beta = beta / (alpha + beta)
+        h_fixed = h_fixed / self.global_time_scale_factor 
 
         #global state vector (u) for Meta-Layer
         #[Alpha, Beta, H_fixed] is stored as a global graph feature
         data.u = torch.tensor([[alpha, beta, h_fixed]], dtype=torch.float)
+
+        #store global time scale factor in data for reference (can be used for denormalization later in decoder if needed)
+        data.glabal_scale_factor = torch.tensor([self.global_time_scale_factor], dtype=torch.float)
 
         #-STR-edge feature engineering
         
@@ -183,18 +196,22 @@ class GnnDataInstanceBuilder:
         edge_index_ord = torch.tensor([src_list, dst_list], dtype=torch.long)
         edge_attr_ord = torch.tensor(travel_time_list, dtype=torch.float)
         
-        #normalize travel times (max-normalization)
         #for deep GNNs with attention mechanisms, normalization is mandatory to prevent numerical instability
-        max_travel_time = 1.0 #default to avoid div/0
+        #max_travel_time = 1.0 #default to avoid div/0 
         if edge_attr_ord.shape[0] > 0:
-            max_travel_time = edge_attr_ord.max().item()
-            edge_attr_ord = edge_attr_ord / max_travel_time
+            #normalize travel times (max-normalization)
+            #max_travel_time = edge_attr_ord.max().item()
+            #edge_attr_ord = edge_attr_ord / max_travel_time
+
+            #global scale normalization (based on a predefined constant that represents the max expected time in the environment)
+            edge_attr_ord = edge_attr_ord / self.global_time_scale_factor
         
         data['order', 'to', 'order'].edge_index = edge_index_ord
         data['order', 'to', 'order'].edge_attr = edge_attr_ord
 
+        #in case of max normalization,
         #store max travel time in edge attributes for reference (possibile denormalization later in decoder)
-        data['order', 'to', 'order'].max_val = torch.tensor([max_travel_time])
+        #data['order', 'to', 'order'].max_val = torch.tensor([max_travel_time])
 
         #operator-order edges (all possible assignment between orders/operators w.r.t. processing times)
         src_ops, dst_ords, proc_time_list = [], [], []
@@ -207,18 +224,20 @@ class GnnDataInstanceBuilder:
         
         data['operator', 'assign', 'order'].edge_index = torch.tensor([src_ops, dst_ords], dtype=torch.long)
 
-        #normalize processing times (max-normalization)
         #for deep GNNs with attention mechanisms, normalization is mandatory to prevent numerical instability
         op_edge_attr = torch.tensor(proc_time_list, dtype=torch.float)
-        max_proc_time = 1.0 #default to avoid div/0
+        #max_proc_time = 1.0 #default to avoid div/0
         if op_edge_attr.shape[0] > 0:
-            max_proc_time = op_edge_attr.max().item()
-            op_edge_attr = op_edge_attr / max_proc_time
+            #normalize processing times (max-normalization)
+            # max_proc_time = op_edge_attr.max().item()
+            # op_edge_attr = op_edge_attr / max_proc_time
+            op_edge_attr = op_edge_attr / self.global_time_scale_factor
         
         data['operator', 'assign', 'order'].edge_attr = op_edge_attr
 
+        #in case of max normalization,
         #store max processing time in edge attributes for reference (possible denormalization later in decoder)
-        data['operator', 'assign', 'order'].max_val = torch.tensor([max_proc_time])
+        #data['operator', 'assign', 'order'].max_val = torch.tensor([max_proc_time])
 
         #reverse Edge (Order -> Op):  An operator also needs to know about the Orders it might take (to update its own state/embedding)
         rev_edge_index = data['operator', 'assign', 'order'].edge_index.flip([0])
