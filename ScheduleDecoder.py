@@ -291,13 +291,14 @@ class ScheduleDecoder:
         return is_valid, report
     
     @torch.no_grad()
-    def check_horizon_constraint(self, batch, schedule_data):
+    def check_horizon_constraint(self, batch, schedule_data, global_time_scale=1.0):
         """
         Validates if operator routes exceed the time horizon (H_fixed).
         Considers only a SINGLE BATCH (global H_fixed is the same for everyone).
         Assumes H in data.u is in MINUTES and schedule times are in SECONDS.
         - batch: The HeteroData batch object (contains data.u for H_fixed).
         - schedule_data: The dictionary structure produced by export_schedule_to_json.
+        - global_time_scale: The factor to convert time units in batch.u to match schedule times (e.g., if batch.u is in minutes and schedule times are in seconds, this should be 60).
         """
         violations = []
         
@@ -305,7 +306,7 @@ class ScheduleDecoder:
             return True, []
             
         #batch.u shape is [1, 3]
-        h_fixed_mins = float(batch.u[0, 2].item())
+        h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale #recovery of original time scale
         
         if h_fixed_mins <= 60:
             print(f"Warning: H_fixed is very low ({h_fixed_mins} mins). Check if time units are correct.")
@@ -476,16 +477,28 @@ class ScheduleDecoder:
         Exports a valid schedule to JSON with timing information.
         Format per step: {mission_id, start_time, finish_time, processing_duration, travel_duration, successor}
         """
-        scale_proc = 1.0
-        if hasattr(batch['operator', 'assign', 'order'], 'max_val'):
-            #take mean or first if batched
-            scale_proc = batch['operator', 'assign', 'order'].max_val.mean().item()
+        #in case of separated normalization, we need to recover original time values for processing and travel times
+        # scale_proc = 1.0
+        # if hasattr(batch['operator', 'assign', 'order'], 'max_val'):
+        #     #take mean or first if batched
+        #     scale_proc = batch['operator', 'assign', 'order'].max_val.mean().item()
             
-        scale_travel = 1.0
-        if hasattr(batch['order', 'to', 'order'], 'max_val'):
+        # scale_travel = 1.0
+        # if hasattr(batch['order', 'to', 'order'], 'max_val'):
+        #     #take mean or first if batched
+        #     scale_travel = batch['order', 'to', 'order'].max_val.mean().item()
+        
+        global_time_scale = 1.0
+        if hasattr(batch, 'glabal_scale_factor'):
             #take mean or first if batched
-            scale_travel = batch['order', 'to', 'order'].max_val.mean().item()
+            global_time_scale = batch.glabal_scale_factor.mean().item()
 
+        if not hasattr(batch, 'u') or batch.u is None:
+            return True, []
+            
+        #batch.u shape is [1, 3]
+        h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale #recovery of original time scale
+        
         if not report["valid"]:
             print("Warning: exporting an invalid schedule!")
 
@@ -576,65 +589,90 @@ class ScheduleDecoder:
             while unvisited:
                 #pick best start from remaining unvisited
                 start_node = None
+                start_proc_time = 0.0
+
                 for cand in sorted_orders:
                     if cand in unvisited:
-                        start_node = cand
-                        break
+                        #check feasibility for single node route (start time + processing <= H)
+                        p_t = proc_time_map.get((op_idx, cand), 0.0) * global_time_scale
+                        
+                        #assuming start at t=0 + travel from Base (0 if ignored)
+                        if p_t <= h_fixed_mins:
+                            start_node = cand
+                            start_proc_time = p_t
+                            break
                 
                 if start_node is None: break 
                 
                 #greedy route generation with timings
                 route_steps = []
                 curr = start_node
-                current_time = 0.0
+                current_time = 0.0 #reset time for new route
+
+                start_t = current_time 
+                finish_t = start_t + start_proc_time
+                current_time = finish_t
                 
+                #add initial step
+                step = {
+                    "mission_id": all_mission_ids[curr],
+                    "start_time": round(start_t, 2),
+                    "finish_time": round(finish_t, 2),
+                    "processing_duration": round(start_proc_time, 2),
+                    "travel_duration": 0.0,
+                    "successor": None,
+                    "_internal_idx": int(curr)
+                }
+                route_steps.append(step)
+                unvisited.discard(curr)
+
+                #extend Route
                 while True:
-                    unvisited.discard(curr)
-                    real_mission_id = all_mission_ids[curr]
-                    
-                    #travel time
-                    travel_t = 0.0
-                    if len(route_steps) > 0:
-                         #previous step's node internal index
-                         prev_node = route_steps[-1]["_internal_idx"]
-                         travel_t = travel_time_map.get((prev_node, curr), 0.0) * scale_travel
-                    
-                    start_t = current_time + travel_t
-                    
-                    #processing time
-                    proc_t = proc_time_map.get((op_idx, curr), 0.0) * scale_proc
-                    finish_t = start_t + proc_t
-                    current_time = finish_t
+                    best_next = None
+                    best_next_metrics = None #(travel_t, proc_t, finish_t)
                     
                     #find best next step
                     #edge (curr -> next) exists & next is in 'unvisited' cluster
-                    best_next = None
                     if curr in seq_adj:
                         for neighbor, prob in seq_adj[curr]:
                             if neighbor in unvisited:
-                                best_next = neighbor
-                                break
-                    
-                    successor_id = None
-                    if best_next is not None:
-                        successor_id = all_mission_ids[best_next]
-                    
-                    #route step with timings
-                    step = {
-                        "mission_id": real_mission_id,
-                        "start_time": round(start_t, 2),
-                        "finish_time": round(finish_t, 2),
-                        "processing_duration": round(proc_t, 2),
-                        "travel_duration": round(travel_t, 2),
-                        "successor": successor_id,
-                        "_internal_idx": int(curr) #temp helper
-                    }
-                    
-                    route_steps.append(step)
+                                #calculate p & t times for this potential next step
+                                t_travel = travel_time_map.get((int(curr), int(neighbor)), 0.0) * global_time_scale
+                                t_proc = proc_time_map.get((op_idx, int(neighbor)), 0.0) * global_time_scale
+
+                                #finish time
+                                next_finish = current_time + t_travel + t_proc
+
+                                #horizon check
+                                if next_finish <= h_fixed_mins:
+                                    best_next = neighbor
+                                    best_next_metrics = (t_travel, t_proc, next_finish)
+                                    break #found best valid neighbor
                     
                     if best_next is not None:
+                        #save metrics for this step
+                        t_t, p_t, f_t = best_next_metrics
+                        
+                        #update previous step's successor
+                        route_steps[-1]["successor"] = all_mission_ids[best_next]
+                        
+                        #new step
+                        step = {
+                            "mission_id": all_mission_ids[best_next],
+                            "start_time": round(current_time + t_t, 2),
+                            "finish_time": round(f_t, 2),
+                            "processing_duration": round(p_t, 2),
+                            "travel_duration": round(t_t, 2),
+                            "successor": None,
+                            "_internal_idx": int(best_next)
+                        }
+                        route_steps.append(step)
+                        
+                        #update state
                         curr = best_next
-                    else:
+                        current_time = f_t
+                        unvisited.discard(curr)
+                    else: #no valid next step, end route here
                         break
                 
                 #clean temp node internal idx
@@ -646,11 +684,11 @@ class ScheduleDecoder:
             schedule_data["operators"].append({
                 "operator_id": real_op_id,
                 #internal_idx": int(op_idx),
-                "assigned_orders_count": len(orders),
+                "assigned_orders_count": sum(len(r) for r in routes),
                 "routes": routes
             })
         
-        h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data)
+        h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
     
         schedule_data["metadata"]["horizon_valid"] = h_valid
         schedule_data["metadata"]["horizon_violations"] = h_violations
