@@ -184,6 +184,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #concat: [op, order, global, time]
         assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr], dim=1)
 
+        #the model considers h_fixed by directly concatenating it to the input vector of the final decision head (assign MLP).
+        #Which allows the MLPs to learn a decision boundary that depends on h_fixed.
         #apply sigmoid to squash raw logits to [0, 1] probability
         out_assign = torch.sigmoid(self.assign_head(assign_input))
 
@@ -203,6 +205,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr], dim=1)
 
+        #the model considers h_fixed by directly concatenating it to the input vector of the final decision head (seq MLP).
+        #Which allows the MLPs to learn a decision boundary that depends on h_fixed.
         #apply sigmoid to squash raw logits to [0, 1] probability
         out_seq = torch.sigmoid(self.seq_head(seq_input))
         
