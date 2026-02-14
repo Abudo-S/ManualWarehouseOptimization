@@ -8,17 +8,28 @@ SAVE_MODEL_PATH = "checkpoints/gnn_model_weights.pth"
 SAVE_MODEL_IN_TRAINING_PATH = "checkpoints/gnn_checkpoint_epoch_idx.pth" #replace idx with epoch number when saving
 
 class MultiCriteriaGNNModel(torch.nn.Module):
-    def __init__(self, metadata, hidden_dim=64, num_layers=3, heads=4, dropout=0.2):
+    def __init__(self, 
+                 metadata, 
+                 hidden_dim=64, 
+                 num_layers=3, 
+                 heads=4, 
+                 dropout=0.2):
         '''
         metadata: Tuple of (node_types, edge_types) from the heterogeneous graph
         hidden_dim: Dimension of hidden embeddings
         num_layers: Number of GNN layers
         heads: Number of attention heads in GATv2
-        dropout: Dropout rate for GATv2 layers to regularize the Attention mechanism.
+        dropout: Dropout rate for GATv2 layers to regularize the attention mechanism.
+        (e.g., max time in minutes) to [0,1] range for better training stability.
         defines a multi-criteria GNN model with three heads:
         1.Activation Head: Classifies operator nodes as active/inactive
         2.Assignment Head: Classifies edges from operators to orders
         3.Sequence Head: Classifies edges between orders
+
+        Note that model time features (H_fixed, processing time, travel time) should be pre-scaled to 
+        [0,1] range before being fed into the model for better training stability. 
+        This can be done by dividing the raw time values by a constant (e.g., 480.0 minutes for an 8-hour shift) 
+        to bring them to a similar scale as the node features.
         '''
         super().__init__()
         
@@ -120,7 +131,6 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         - Assignment: Probability that an operator should be assigned to a specific order.
         - Sequence: Probability that one order should precede another in the sequence.
         """
-        
         #initial projection
         x_dict['order'] = self.order_lin(x_dict['order']).relu()
         x_dict['operator'] = self.op_lin(x_dict['operator']).relu()
