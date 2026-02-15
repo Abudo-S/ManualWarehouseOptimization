@@ -180,7 +180,7 @@ class GnnDataInstanceBuilder:
         data.u = torch.tensor([[alpha, beta, h_fixed]], dtype=torch.float)
 
         #store global time scale factor in data for reference (can be used for denormalization later in decoder if needed)
-        data.glabal_scale_factor = torch.tensor([self.global_time_scale_factor], dtype=torch.float)
+        data.global_scale_factor = torch.tensor([self.global_time_scale_factor], dtype=torch.float)
 
         #-STR-edge feature engineering
         
