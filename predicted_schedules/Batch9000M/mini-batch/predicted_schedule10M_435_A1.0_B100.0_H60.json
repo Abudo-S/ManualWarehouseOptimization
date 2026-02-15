@@ -1,0 +1,70 @@
+{
+    "metadata": {
+        "num_orders": 5,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": [
+            "schedule10M_435_A1.0_B100.0_H60"
+        ],
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 3,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3877771,
+                        "start_time": 0.0,
+                        "finish_time": 11.210000216960907,
+                        "processing_duration": 11.210000216960907,
+                        "travel_duration": 0.0,
+                        "successor": 3882287
+                    },
+                    {
+                        "mission_id": 3882287,
+                        "start_time": 21.97,
+                        "finish_time": 33.18,
+                        "processing_duration": 11.21,
+                        "travel_duration": 10.76,
+                        "successor": 3885250
+                    },
+                    {
+                        "mission_id": 3885250,
+                        "start_time": 43.95,
+                        "finish_time": 55.16,
+                        "processing_duration": 11.21,
+                        "travel_duration": 10.76,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 2,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3883367,
+                        "start_time": 0.0,
+                        "finish_time": 11.210000216960907,
+                        "processing_duration": 11.210000216960907,
+                        "travel_duration": 0.0,
+                        "successor": 3885754
+                    },
+                    {
+                        "mission_id": 3885754,
+                        "start_time": 21.97,
+                        "finish_time": 33.18,
+                        "processing_duration": 11.21,
+                        "travel_duration": 10.76,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}
