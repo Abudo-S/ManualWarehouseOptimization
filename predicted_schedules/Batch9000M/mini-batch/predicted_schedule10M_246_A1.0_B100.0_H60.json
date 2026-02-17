@@ -29,10 +29,10 @@
                         "finish_time": 31.93,
                         "processing_duration": 10.7,
                         "travel_duration": 10.52,
-                        "successor": 3878955
+                        "successor": 3879010
                     },
                     {
-                        "mission_id": 3878955,
+                        "mission_id": 3879010,
                         "start_time": 42.44,
                         "finish_time": 53.15,
                         "processing_duration": 10.7,
@@ -48,23 +48,23 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3878971,
+                        "mission_id": 3878955,
                         "start_time": 0.0,
                         "finish_time": 10.703332722187042,
                         "processing_duration": 10.703332722187042,
                         "travel_duration": 0.0,
-                        "successor": 3879010
+                        "successor": 3878971
                     },
                     {
-                        "mission_id": 3879010,
+                        "mission_id": 3878971,
                         "start_time": 21.22,
                         "finish_time": 31.93,
                         "processing_duration": 10.7,
                         "travel_duration": 10.52,
-                        "successor": 3879101
+                        "successor": 3878992
                     },
                     {
-                        "mission_id": 3879101,
+                        "mission_id": 3878992,
                         "start_time": 42.44,
                         "finish_time": 53.15,
                         "processing_duration": 10.7,
@@ -85,18 +85,18 @@
                         "finish_time": 10.703332722187042,
                         "processing_duration": 10.703332722187042,
                         "travel_duration": 0.0,
-                        "successor": 3878992
-                    },
-                    {
-                        "mission_id": 3878992,
-                        "start_time": 21.22,
-                        "finish_time": 31.93,
-                        "processing_duration": 10.7,
-                        "travel_duration": 10.52,
                         "successor": 3879051
                     },
                     {
                         "mission_id": 3879051,
+                        "start_time": 21.22,
+                        "finish_time": 31.93,
+                        "processing_duration": 10.7,
+                        "travel_duration": 10.52,
+                        "successor": 3879101
+                    },
+                    {
+                        "mission_id": 3879101,
                         "start_time": 42.44,
                         "finish_time": 53.15,
                         "processing_duration": 10.7,

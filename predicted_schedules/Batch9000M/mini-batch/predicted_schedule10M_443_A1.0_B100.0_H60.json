@@ -21,22 +21,22 @@
                         "finish_time": 10.129999816417694,
                         "processing_duration": 10.129999816417694,
                         "travel_duration": 0.0,
-                        "successor": 3883594
+                        "successor": 3877087
                     },
                     {
-                        "mission_id": 3883594,
-                        "start_time": 20.31,
-                        "finish_time": 30.53,
-                        "processing_duration": 10.21,
-                        "travel_duration": 10.18,
-                        "successor": 3884487
+                        "mission_id": 3877087,
+                        "start_time": 20.24,
+                        "finish_time": 30.37,
+                        "processing_duration": 10.13,
+                        "travel_duration": 10.11,
+                        "successor": 3877213
                     },
                     {
-                        "mission_id": 3884487,
-                        "start_time": 40.71,
-                        "finish_time": 50.93,
-                        "processing_duration": 10.21,
-                        "travel_duration": 10.18,
+                        "mission_id": 3877213,
+                        "start_time": 40.48,
+                        "finish_time": 50.61,
+                        "processing_duration": 10.13,
+                        "travel_duration": 10.11,
                         "successor": null
                     }
                 ]
@@ -48,15 +48,15 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3877087,
+                        "mission_id": 3877126,
                         "start_time": 0.0,
                         "finish_time": 10.129999816417694,
                         "processing_duration": 10.129999816417694,
                         "travel_duration": 0.0,
-                        "successor": 3877126
+                        "successor": 3877262
                     },
                     {
-                        "mission_id": 3877126,
+                        "mission_id": 3877262,
                         "start_time": 20.24,
                         "finish_time": 30.37,
                         "processing_duration": 10.13,
@@ -80,27 +80,27 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3877213,
+                        "mission_id": 3884487,
                         "start_time": 0.0,
-                        "finish_time": 10.129999816417694,
-                        "processing_duration": 10.129999816417694,
+                        "finish_time": 10.213333368301392,
+                        "processing_duration": 10.213333368301392,
                         "travel_duration": 0.0,
-                        "successor": 3877262
-                    },
-                    {
-                        "mission_id": 3877262,
-                        "start_time": 20.24,
-                        "finish_time": 30.37,
-                        "processing_duration": 10.13,
-                        "travel_duration": 10.11,
                         "successor": 3877302
                     },
                     {
                         "mission_id": 3877302,
-                        "start_time": 40.48,
-                        "finish_time": 50.61,
+                        "start_time": 20.4,
+                        "finish_time": 30.53,
                         "processing_duration": 10.13,
-                        "travel_duration": 10.11,
+                        "travel_duration": 10.18,
+                        "successor": 3883594
+                    },
+                    {
+                        "mission_id": 3883594,
+                        "start_time": 40.71,
+                        "finish_time": 50.93,
+                        "processing_duration": 10.21,
+                        "travel_duration": 10.18,
                         "successor": null
                     }
                 ]

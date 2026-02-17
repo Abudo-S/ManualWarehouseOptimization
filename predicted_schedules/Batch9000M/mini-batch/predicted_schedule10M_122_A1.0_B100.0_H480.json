@@ -29,34 +29,34 @@
                         "finish_time": 31.06,
                         "processing_duration": 10.35,
                         "travel_duration": 10.36,
+                        "successor": 3876933
+                    },
+                    {
+                        "mission_id": 3876933,
+                        "start_time": 41.42,
+                        "finish_time": 51.77,
+                        "processing_duration": 10.35,
+                        "travel_duration": 10.36,
                         "successor": 3876852
                     },
                     {
                         "mission_id": 3876852,
-                        "start_time": 41.42,
-                        "finish_time": 51.77,
+                        "start_time": 62.13,
+                        "finish_time": 72.48,
                         "processing_duration": 10.35,
                         "travel_duration": 10.36,
                         "successor": 3876858
                     },
                     {
                         "mission_id": 3876858,
-                        "start_time": 62.13,
-                        "finish_time": 72.48,
+                        "start_time": 82.84,
+                        "finish_time": 93.18,
                         "processing_duration": 10.35,
                         "travel_duration": 10.36,
                         "successor": 3876922
                     },
                     {
                         "mission_id": 3876922,
-                        "start_time": 82.84,
-                        "finish_time": 93.18,
-                        "processing_duration": 10.35,
-                        "travel_duration": 10.36,
-                        "successor": 3876933
-                    },
-                    {
-                        "mission_id": 3876933,
                         "start_time": 103.55,
                         "finish_time": 113.89,
                         "processing_duration": 10.35,

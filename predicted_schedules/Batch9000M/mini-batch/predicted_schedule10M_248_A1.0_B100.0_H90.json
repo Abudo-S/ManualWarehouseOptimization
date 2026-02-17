@@ -29,18 +29,18 @@
                         "finish_time": 33.18,
                         "processing_duration": 11.21,
                         "travel_duration": 10.76,
-                        "successor": 3884357
-                    },
-                    {
-                        "mission_id": 3884357,
-                        "start_time": 43.95,
-                        "finish_time": 55.16,
-                        "processing_duration": 11.21,
-                        "travel_duration": 10.76,
                         "successor": 3877814
                     },
                     {
                         "mission_id": 3877814,
+                        "start_time": 43.95,
+                        "finish_time": 55.16,
+                        "processing_duration": 11.21,
+                        "travel_duration": 10.76,
+                        "successor": 3884357
+                    },
+                    {
+                        "mission_id": 3884357,
                         "start_time": 65.92,
                         "finish_time": 77.13,
                         "processing_duration": 11.21,

@@ -29,34 +29,34 @@
                         "finish_time": 32.47,
                         "processing_duration": 10.85,
                         "travel_duration": 10.78,
-                        "successor": 3886990
-                    },
-                    {
-                        "mission_id": 3886990,
-                        "start_time": 43.26,
-                        "finish_time": 54.09,
-                        "processing_duration": 10.84,
-                        "travel_duration": 10.79,
                         "successor": 3886973
                     },
                     {
                         "mission_id": 3886973,
-                        "start_time": 64.88,
-                        "finish_time": 75.72,
+                        "start_time": 43.26,
+                        "finish_time": 54.09,
                         "processing_duration": 10.84,
                         "travel_duration": 10.79,
-                        "successor": 3887080
+                        "successor": 3886990
                     },
                     {
-                        "mission_id": 3887080,
-                        "start_time": 86.5,
-                        "finish_time": 97.34,
+                        "mission_id": 3886990,
+                        "start_time": 64.88,
+                        "finish_time": 75.72,
                         "processing_duration": 10.84,
                         "travel_duration": 10.79,
                         "successor": 3887052
                     },
                     {
                         "mission_id": 3887052,
+                        "start_time": 86.5,
+                        "finish_time": 97.34,
+                        "processing_duration": 10.84,
+                        "travel_duration": 10.79,
+                        "successor": 3887080
+                    },
+                    {
+                        "mission_id": 3887080,
                         "start_time": 108.13,
                         "finish_time": 118.96,
                         "processing_duration": 10.84,

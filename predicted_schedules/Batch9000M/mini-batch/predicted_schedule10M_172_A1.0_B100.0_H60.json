@@ -21,18 +21,18 @@
                         "finish_time": 10.193333923816681,
                         "processing_duration": 10.193333923816681,
                         "travel_duration": 0.0,
-                        "successor": 3888600
-                    },
-                    {
-                        "mission_id": 3888600,
-                        "start_time": 20.36,
-                        "finish_time": 30.56,
-                        "processing_duration": 10.2,
-                        "travel_duration": 10.17,
                         "successor": 3889440
                     },
                     {
                         "mission_id": 3889440,
+                        "start_time": 20.36,
+                        "finish_time": 30.56,
+                        "processing_duration": 10.2,
+                        "travel_duration": 10.17,
+                        "successor": 3888600
+                    },
+                    {
+                        "mission_id": 3888600,
                         "start_time": 40.73,
                         "finish_time": 50.93,
                         "processing_duration": 10.2,
@@ -61,10 +61,10 @@
                         "finish_time": 30.55,
                         "processing_duration": 10.19,
                         "travel_duration": 10.16,
-                        "successor": 3880287
+                        "successor": 3880043
                     },
                     {
-                        "mission_id": 3880287,
+                        "mission_id": 3880043,
                         "start_time": 40.71,
                         "finish_time": 50.9,
                         "processing_duration": 10.19,
@@ -80,7 +80,7 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3880043,
+                        "mission_id": 3880287,
                         "start_time": 0.0,
                         "finish_time": 10.193333923816681,
                         "processing_duration": 10.193333923816681,
