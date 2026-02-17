@@ -1010,20 +1010,20 @@ if __name__ == "__main__":
     #tuned hyperparameters 
     best_conf = {
         'batch_size': 32,
-        'hidden_dim': 64,
+        'hidden_dim': 128,
         'heads': 4,
-        'dropout': 0.1,
+        'dropout': 0.0,
         'lr_trunk': 0.001,
         'lr_activation': 0.01,
-        'lr_assignment': 0.0001,
-        'lr_sequence': 0.0005
+        'lr_assignment': 0.0005,
+        'lr_sequence': 0.001
     }
 
     #tuned thresholds for feasibility validation 
     best_thresholds =  {
-        'activation': 0.2209,
-        'assignment': 0.0457,
-        'sequence': 0.0918
+        'activation': 0.2229,
+        'assignment': 0.0352,
+        'sequence': 0.1128
     }
 
     model = MultiCriteriaGNNModel(
