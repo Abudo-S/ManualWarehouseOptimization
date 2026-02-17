@@ -430,17 +430,19 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         return best_config, best_threshold, best_score
 
-    def tune_threshold(self):
+    def tune_threshold(self, target_head=None):
         """
         Finds the optimal classification threshold using the Precision-Recall Curve.
         The tuning is done on the validation set (here, we use the validation set for simplicity, but anyway the final test set is kept apart).
         Note that the threshold might need to be tuned separately for each head (activation, assignment, sequence).
         Here, we aggregate all predictions and labels from all heads and tune a shared single threshold for simplicity.
         
+        -target_head (head_name or None): If specified, only tune threshold for this head. If None, aggregate all heads together for tuning (overall threshold tuning).
+
         Returns: best_threshold, best_f1
         """
 
-        print("Tuning threshold using validation Set...")
+        print(f"Tuning {target_head if target_head else 'overall'} threshold using validation Set...")
         
         #collect all probs and labels 
         all_probs = []
@@ -455,9 +457,10 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                 batch_dict_arg = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
                 preds = self.model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict_arg)
                 
-                #aggregate from all heads (activation, assignment, sequence)
-                #note: we might tune them separately for better performance per head
-                for head_name in ['activation', 'assignment', 'sequence']:
+                #aggregate from all heads (activation, assignment, sequence) if target_head is none.
+                #note: we need to tune heads separately for better performance per head
+                target_heads = [target_head] if target_head else ['activation', 'assignment', 'sequence']
+                for head_name in target_heads:
                     if head_name in preds:
                         #probs (sigmoid output)
                         probs = preds[head_name].cpu().numpy().flatten()
@@ -478,7 +481,6 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         y_scores = np.concatenate(all_probs)
         y_true = np.concatenate(all_labels)
         
-        #use Scikit-Learn to get P/R curve
         #thresholds array is one element smaller than precision/recall arrays
         precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
         
@@ -486,7 +488,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         #handle division by zero (0 precision + 0 recall)
         with np.errstate(divide='ignore', invalid='ignore'):
             f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
-        f1_scores = np.nan_to_num(f1_scores) # Replace NaNs with 0
+        f1_scores = np.nan_to_num(f1_scores) #replace NaNs with 0
         
         #find the index of the best F1
         #Note: f1_scores has same length as precisions/recalls, which is len(thresholds) + 1
@@ -498,7 +500,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
             best_threshold = thresholds[best_idx]
             best_f1 = f1_scores[best_idx]
         else:
-            best_threshold = self.threshold   #fallback
+            best_threshold = self.threshold  #fallback
             best_f1 = 0.0
 
         print(f"Optimal threshold: {best_threshold:.4f} (max F1: {best_f1:.4f})")
