@@ -228,7 +228,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
     def load_model(self, save_path=SAVE_MODEL_PATH):
         print(f"Loading model weights from {save_path}...")
         
-        #load the model weights
+        #load model weights
         self.load_state_dict(torch.load(save_path))
         self.eval()
 
