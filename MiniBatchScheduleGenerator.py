@@ -14,7 +14,7 @@ ALPHA = 1.0 #makespan weight
 BETA = 100.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
-LARGE_SCALE_BATCH_NAME = "Batch9000M"
+LARGE_SCALE_BATCH_NAME = "Batch10000M"
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
 MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
