@@ -11,7 +11,7 @@ from ScheduleEvaluator import ScheduleEvaluator
 from MultiCriteriaGNNModel import MultiCriteriaGNNModel
 from GnnScheduleDataset import GnnScheduleDataset
 
-LARGE_SCALE_BATCH_NAME = "Batch9000M" #Batch1000M
+LARGE_SCALE_BATCH_NAME = "Batch10000M" #Batch1000M, Batch9000M or Batch10000M
 TARGET_MINI_BATCH_SIZE = 10 #number of missions per mini-batch
 LARGE_SCALE_MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}.csv"
 PREPROCESSED_BATCH_DIR = f"./preprocessed/{LARGE_SCALE_BATCH_NAME}/Batch{TARGET_MINI_BATCH_SIZE}M_idx.xlsx" #idx to be replaced cluster idx
@@ -1021,9 +1021,9 @@ if __name__ == "__main__":
 
     #tuned thresholds for feasibility validation 
     best_thresholds =  {
-        'activation': 0.2229,
-        'assignment': 0.0352,
-        'sequence': 0.1128
+        'activation': 0.2137,
+        'assignment': 0.0321,
+        'sequence': 0.1096
     }
 
     model = MultiCriteriaGNNModel(
@@ -1062,6 +1062,12 @@ if __name__ == "__main__":
     for batch in loader:
         batch = batch.to(device)
         batch_dict = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
+
+        print(f"Evaluating schedule_id: {batch.schedule_id[0]}")
+
+        if batch['order'].num_nodes < 2:
+            print(f"Schedule [{idx}] has less than 2 orders, skipping feasibility/export check.")
+            continue
 
         out = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict)
 
