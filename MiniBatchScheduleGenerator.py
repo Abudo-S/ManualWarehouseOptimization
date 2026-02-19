@@ -11,7 +11,7 @@ from MultiCriteriaMIPModel import MultiCriteriaMIPModel
 #when ALPHA is almost equal to BETA, the solver struggles to find an optimal feasible solution & it converges slowly
 H_FIXED_MINUTES = 480 #480 for base shift 
 ALPHA = 1.0 #makespan weight
-BETA = 100.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
+BETA = 1000.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
 LARGE_SCALE_BATCH_NAME = "Batch10000M"
