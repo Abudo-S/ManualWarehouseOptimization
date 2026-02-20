@@ -69,3 +69,46 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed
             })
 
+
+    def evaluate_makespan_optimality(self):
+        overall_results = []
+
+        for item in self.items:
+            pred_path = item['predicted_schedule_path']
+            opt_path = item['optimal_schedule_path']
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            pred_makespan = 0.0
+            for op in pred["operators"]:
+                for route in op["routes"]:     
+                    if route:          
+                        route.sort(key=lambda x: x["finish_time"])
+                        #sum of finish times of last missions in each route, as a proxy for makespan (since we don't have the actual schedule structure here)
+                        pred_makespan += route[-1]["finish_time"] 
+
+            df_opt = pd.read_csv(opt_path)
+            #sum of finish times of last missions for each operator, as a proxy for makespan
+            opt_makespan = df_opt.groupby("Operator")["finish"].max().sum() 
+
+            # print(f"Evaluating {pred_path} against {opt_path} with alpha={alpha}, beta={beta}, H_fixed={h_fixed}")
+            # print(f"Predicted Makespan: {pred_makespan}, Optimal Makespan: {opt_makespan}")
+            # print(f"Relative Error: {(pred_makespan - opt_makespan) / opt_makespan:.2%}\n")
+
+            optimality_gap = (pred_makespan - opt_makespan) / opt_makespan if opt_makespan > 0 else float('inf')
+
+            overall_results.append({
+                'batch_num': item['batch_num'],
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_makespan': pred_makespan,
+                'opt_makespan': opt_makespan,
+                'optimality_gap': optimality_gap
+            })
+            
+        return overall_results
