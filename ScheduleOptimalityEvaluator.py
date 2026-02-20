@@ -74,6 +74,7 @@ class ScheduleOptimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             opt_path = item['optimal_schedule_path']
             alpha = item['alpha']
@@ -97,12 +98,12 @@ class ScheduleOptimalityEvaluator:
 
             # print(f"Evaluating {pred_path} against {opt_path} with alpha={alpha}, beta={beta}, H_fixed={h_fixed}")
             # print(f"Predicted Makespan: {pred_makespan}, Optimal Makespan: {opt_makespan}")
-            # print(f"Relative Error: {(pred_makespan - opt_makespan) / opt_makespan:.2%}\n")
+            # print(f"Relative Error for batch [{batch_num}]: {(pred_makespan - opt_makespan) / opt_makespan:.2%}\n")
 
             optimality_gap = (pred_makespan - opt_makespan) / opt_makespan if opt_makespan > 0 else float('inf')
 
             overall_results.append({
-                'batch_num': item['batch_num'],
+                'batch_num': batch_num,
                 'alpha': alpha,
                 'beta': beta,
                 'h_fixed': h_fixed,
