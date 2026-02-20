@@ -113,3 +113,36 @@ class ScheduleOptimalityEvaluator:
             })
             
         return overall_results
+    
+    def evaluate_activation_optimality(self):
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            opt_path = item['optimal_schedule_path']
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            pred_activations = pred["operators"].count()  #number of operators used in the predicted schedule
+
+            df_opt = pd.read_csv(opt_path)
+            opt_activations = df_opt["Operator"].max().count() #number of operators used in the optimal schedule (assuming operator IDs are sequential and start from 1)
+
+            optimality_gap = (pred_activations - opt_activations) / opt_activations if opt_activations > 0 else float('inf')
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_activations': pred_activations,
+                'opt_activations': opt_activations,
+                'optimality_gap': optimality_gap
+            })
+            
+        return overall_results
