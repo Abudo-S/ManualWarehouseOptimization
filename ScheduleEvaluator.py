@@ -120,7 +120,7 @@ class ScheduleEvaluator:
         #sum_weights = alpha + beta + 1e-6
         #normalized_loss = total_loss / sum_weights
 
-        return total_loss, loss_act.item(), loss_assign.item(), loss_seq.item()
+        return total_loss, loss_act, loss_assign.item(), loss_seq.item()
 
     def calc_f1_metrics(self, preds, targets, head_name=None):
         """
