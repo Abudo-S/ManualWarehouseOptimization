@@ -211,3 +211,23 @@ class ScheduleOptimalityEvaluator:
             })
             
         return overall_results
+
+if __name__ == "__main__":
+    evaluator = ScheduleOptimalityEvaluator(SCHEDULE_DIR, PREDICTED_SCHEDULE_DIR)
+    makespan_results = evaluator.evaluate_makespan_optimality()
+    activation_results = evaluator.evaluate_activation_optimality()
+    combined_results = evaluator.evaluate_combined_optimality()
+
+    #convert results to DataFrames for better visualization
+    df_makespan = pd.DataFrame(makespan_results)
+    df_activation = pd.DataFrame(activation_results)
+    df_combined = pd.DataFrame(combined_results)
+
+    print("Makespan Optimality Results:")
+    print(df_makespan)
+
+    print("\nActivation Optimality Results:")
+    print(df_activation)
+
+    print("\nCombined Optimality Results:")
+    print(df_combined)
