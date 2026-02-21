@@ -122,6 +122,43 @@ class ScheduleEvaluator:
 
         return total_loss, loss_act, loss_assign.item(), loss_seq.item()
 
+    def diagnose_operator_embeddings(self, model, batch):
+        with torch.no_grad():
+            #raw features
+            x_dict = {'order': model.order_lin(batch.x_dict['order']).relu(),
+                    'operator': model.op_lin(batch.x_dict['operator']).relu()}
+            
+            #message passing
+            for conv in model.convs:
+                x_dict = conv(x_dict, batch.edge_index_dict, batch.edge_attr_dict)
+                x_dict = {k: v.relu() for k, v in x_dict.items()}
+            
+            op_emb = x_dict['operator']
+            
+            print("------------Operator embedding diagnostics------------")
+            print(f"Shape: {op_emb.shape}")
+            print(f"Mean: {op_emb.mean():.4f}")
+            print(f"Std:  {op_emb.std():.4f}")
+            print(f"Min:  {op_emb.min():.4f}")
+            print(f"Max:  {op_emb.max():.4f}")
+            
+            #check pairwise differences
+            if op_emb.size(0) > 1:
+                pairwise_diffs = []
+                for i in range(op_emb.size(0)):
+                    for j in range(i+1, op_emb.size(0)):
+                        diff = (op_emb[i] - op_emb[j]).abs().mean()
+                        pairwise_diffs.append(diff.cpu().item())
+                print(f"Mean pairwise diff: {np.mean(pairwise_diffs):.6f}")
+                print(f"Max pairwise diff: {np.max(pairwise_diffs):.6f}")
+            
+            #check if all embeddings are nearly identical
+            if op_emb.std() < 1e-4 or np.mean(pairwise_diffs) < 1e-4:
+                print("Critical: Operator embeddings are nearly identical!")
+            
+            return op_emb
+
+
     def calc_f1_metrics(self, preds, targets, head_name=None):
         """
         Calculates Precision, Recall, and F1 score for binary classification.
