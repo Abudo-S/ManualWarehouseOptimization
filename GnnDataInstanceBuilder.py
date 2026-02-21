@@ -81,7 +81,9 @@ class GnnDataInstanceBuilder:
         op_ids = df_ops['OID'].unique()
         op_map = {id: i for i, id in enumerate(op_ids)}
         num_ops = len(op_ids)
-        
+        op_id_emb = torch.arange(num_ops, dtype=torch.float) / num_ops #simple normalized ID embedding (can be replaced with learned embeddings if needed)
+        op_id_emb = op_id_emb.unsqueeze(1)  # [num_ops, 1]
+
         #actual_assignments = set(zip(df_schedule['Operator_ID'], df_schedule['To_Node']))
 
         scaler = MinMaxScaler()
@@ -140,6 +142,9 @@ class GnnDataInstanceBuilder:
         
         ops_scaled = scaler.fit_transform(op_feats_raw)
         x_ops = torch.tensor(ops_scaled, dtype=torch.float)
+
+        #id embedding concatenation (simple normalized ID, can be replaced with learned embeddings if needed)
+        x_ops = torch.cat([x_ops, op_id_emb], dim=1)  #now shape [num_ops, 8] instead of [num_ops, 7]
 
         #for now we exclude the base node from the graph (mission_id = 0) since it doesn't have real features and can cause numerical instability.
         #it can't be assigned to multiple operators in the same route as we need, so it doesn't add much value to the learning process.
