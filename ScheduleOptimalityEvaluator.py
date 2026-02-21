@@ -17,13 +17,13 @@ SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 PREDICTED_SCHEDULE_DIR = f"./predicted_schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch instances
 H_FIXED_EXCEED_TOLERANCE_MIN = 0.0 #allow schedules to tolerate H_fixed exceedance 
-MAX_ITERATIONS_PER_ORDER = 10 #max attempts to find a feasible operator for an order based on assignment probs (in iterative repair)
+
 
 class ScheduleOptimalityEvaluator:
     def parse_filename_params(self, filename):
         """
         Extracts Global Parameters A (alpha), B (beta), H (H_fixed) from  schedule_file filename.
-        pattern: schedule10M_1_A1.0_B100.0_H90.csv
+        pattern: predicted_schedule10M_1_A1.0_B100.0_H90.csv
         """
         pattern = r"A(?P<A>[\d.]+)_B(?P<B>[\d.]+)_H(?P<H>\d+)"
         match = re.search(pattern, filename)
@@ -71,6 +71,10 @@ class ScheduleOptimalityEvaluator:
 
 
     def evaluate_makespan_optimality(self):
+        """
+        Evaluates the makespan optimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
+        """
+
         overall_results = []
 
         for item in self.items:
@@ -94,7 +98,7 @@ class ScheduleOptimalityEvaluator:
 
             df_opt = pd.read_csv(opt_path)
             #sum of finish times of last missions for each operator, as a proxy for makespan
-            opt_makespan = df_opt.groupby("Operator")["finish"].max().sum() 
+            opt_makespan = df_opt.groupby("Operator")["Finish"].max().sum() 
 
             # print(f"Evaluating {pred_path} against {opt_path} with alpha={alpha}, beta={beta}, H_fixed={h_fixed}")
             # print(f"Predicted Makespan: {pred_makespan}, Optimal Makespan: {opt_makespan}")
@@ -109,12 +113,16 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed,
                 'pred_makespan': pred_makespan,
                 'opt_makespan': opt_makespan,
-                'optimality_gap': optimality_gap
+                'optimality_gap': round(optimality_gap, 3)
             })
             
         return overall_results
     
     def evaluate_activation_optimality(self):
+        """
+        Evaluates the optimality of each batch predicted schedules in terms of number of activations (operators used), compared to the optimal schedules.
+        """
+
         overall_results = []
 
         for item in self.items:
@@ -128,10 +136,10 @@ class ScheduleOptimalityEvaluator:
             with open(pred_path) as f:
                 pred = json.load(f)
 
-            pred_activations = pred["operators"].count()  #number of operators used in the predicted schedule
-
+            pred_activations = len(pred["operators"])  #number of operators used in the predicted schedule
+    
             df_opt = pd.read_csv(opt_path)
-            opt_activations = df_opt["Operator"].max().count() #number of operators used in the optimal schedule (assuming operator IDs are sequential and start from 1)
+            opt_activations = len(df_opt["Operator"]) #number of operators used in the optimal schedule (assuming operator IDs are sequential and start from 1)
 
             optimality_gap = (pred_activations - opt_activations) / opt_activations if opt_activations > 0 else float('inf')
 
@@ -142,7 +150,64 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed,
                 'pred_activations': pred_activations,
                 'opt_activations': opt_activations,
-                'optimality_gap': optimality_gap
+                'optimality_gap': round(optimality_gap, 3)
+            })
+            
+        return overall_results
+
+    def evaluate_combined_optimality(self):
+        """
+        Combines makespan and activation optimality gaps using the provided normalized alpha and beta weights per batch,
+        to compute a single combined optimality gap metric for each batch schedule.
+        """
+
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            opt_path = item['optimal_schedule_path']
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            pred_makespan = 0.0
+            for op in pred["operators"]:
+                for route in op["routes"]:     
+                    if route:          
+                        route.sort(key=lambda x: x["finish_time"])
+                        pred_makespan += route[-1]["finish_time"] 
+
+            pred_activations = len(pred["operators"]) #number of operators used in the predicted schedule
+
+            df_opt = pd.read_csv(opt_path)
+            opt_makespan = df_opt.groupby("Operator")["Finish"].max().sum() 
+            opt_activations = len(df_opt["Operator"]) #number of operators used in the optimal schedule
+
+            makespan_opt_gap = (pred_makespan - opt_makespan) / opt_makespan if opt_makespan > 0 else float('inf')
+            activation_opt_gap = (pred_activations - opt_activations) / opt_activations if opt_activations > 0 else float('inf')
+
+            #normalize alpha, beta to sum to 1 for weighting
+            alpha = alpha / (alpha + beta)
+            beta = beta / (alpha + beta)
+
+            combined_opt_gap = alpha * makespan_opt_gap + beta * activation_opt_gap
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_makespan': pred_makespan,
+                'opt_makespan': opt_makespan,
+                'pred_activations': pred_activations,
+                'opt_activations': opt_activations,
+                'makespan_opt_gap': round(makespan_opt_gap, 3),
+                'activation_opt_gap': round(activation_opt_gap, 3),
+                'combined_opt_gap': round(combined_opt_gap, 3)
             })
             
         return overall_results
