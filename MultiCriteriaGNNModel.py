@@ -40,7 +40,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
 
         #node encoders (project raw features to hidden dim)
         self.order_lin = Linear(10, hidden_dim) # mission features: 'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'FROM_X', 'FROM_Y', 'FROM_Z','TO_X', 'TO_Y', 'TO_Z'
-        self.op_lin = Linear(7, hidden_dim) # operator features: 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
+        self.op_lin = Linear(8, hidden_dim) # operator features: 'ID', 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
         
         #message passing layers (encoder)
         self.convs = torch.nn.ModuleList()
@@ -161,6 +161,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #num_ops = x_dict['operator'].size(0)
         #u_ops = u.expand(num_ops, -1)
         
+        #print((u_ops, x_dict['operator'])) #debugging before concat
+
         #concat: [op_emb, global]
         op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
         #apply sigmoid to squash raw logits to [0, 1] probability
