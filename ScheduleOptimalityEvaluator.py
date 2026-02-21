@@ -73,6 +73,10 @@ class ScheduleOptimalityEvaluator:
     def evaluate_makespan_optimality(self):
         """
         Evaluates the makespan optimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
+        the negative gap means that the predicted schedule is better than optimal schedule (which can never happen),
+        but it means that the model has activated more operators than the optimal schedule (so it got a better makespan),
+        but will be considered as a sign of suboptimality in terms of activation cost.
+        Optimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
         """
 
         overall_results = []
@@ -113,7 +117,7 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed,
                 'pred_makespan': pred_makespan,
                 'opt_makespan': opt_makespan,
-                'optimality_gap': round(optimality_gap, 3)
+                'optimality_gap': round(optimality_gap, 4) * 100 #convert to percentage
             })
             
         return overall_results
@@ -121,6 +125,7 @@ class ScheduleOptimalityEvaluator:
     def evaluate_activation_optimality(self):
         """
         Evaluates the optimality of each batch predicted schedules in terms of number of activations (operators used), compared to the optimal schedules.
+        Optimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
         """
 
         overall_results = []
@@ -150,7 +155,7 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed,
                 'pred_activations': pred_activations,
                 'opt_activations': opt_activations,
-                'optimality_gap': round(optimality_gap, 3)
+                'optimality_gap': round(optimality_gap, 4) * 100 #convert to percentage
             })
             
         return overall_results
@@ -159,6 +164,7 @@ class ScheduleOptimalityEvaluator:
         """
         Combines makespan and activation optimality gaps using the provided normalized alpha and beta weights per batch,
         to compute a single combined optimality gap metric for each batch schedule.
+        All optimality gaps are converted to percentages for easier interpretation (e.g. 0.05 becomes 5% gap).
         """
 
         overall_results = []
@@ -194,7 +200,7 @@ class ScheduleOptimalityEvaluator:
             alpha = alpha / (alpha + beta)
             beta = beta / (alpha + beta)
 
-            combined_opt_gap = alpha * makespan_opt_gap + beta * activation_opt_gap
+            combined_opt_gap = abs(alpha * makespan_opt_gap + beta * activation_opt_gap)
 
             overall_results.append({
                 'batch_num': batch_num,
@@ -205,9 +211,9 @@ class ScheduleOptimalityEvaluator:
                 'opt_makespan': opt_makespan,
                 'pred_activations': pred_activations,
                 'opt_activations': opt_activations,
-                'makespan_opt_gap': round(makespan_opt_gap, 3),
-                'activation_opt_gap': round(activation_opt_gap, 3),
-                'combined_opt_gap': round(combined_opt_gap, 3)
+                'makespan_opt_gap': round(makespan_opt_gap, 4) * 100, #convert to percentage
+                'activation_opt_gap': round(activation_opt_gap, 4) * 100, #convert to percentage
+                'combined_opt_gap': round(combined_opt_gap, 4) * 100 #convert to percentage
             })
             
         return overall_results
