@@ -40,8 +40,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
 
         #node encoders (project raw features to hidden dim)
         self.order_lin = Linear(10, hidden_dim) # mission features: 'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'FROM_X', 'FROM_Y', 'FROM_Z','TO_X', 'TO_Y', 'TO_Z'
-        self.op_lin = Linear(8, hidden_dim) # operator features: 'ID', 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
         
+        #self.op_lin = Linear(7, hidden_dim) # operator features: 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
+        #self.op_lin = Linear(8, hidden_dim) # operator features: 'ID', 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
+        self.op_lin = Linear(15, hidden_dim)  # 7 original + 8 positional encoding
+
         #message passing layers (encoder)
         self.convs = torch.nn.ModuleList()
 
