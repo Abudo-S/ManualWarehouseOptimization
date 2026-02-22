@@ -138,6 +138,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         x_dict['order'] = self.order_lin(x_dict['order']).relu()
         x_dict['operator'] = self.op_lin(x_dict['operator']).relu()
         
+        #since positional encodings are being completely washed out by GATv2Conv (mean pairwise diff still 0.000000),
+        #the message passing is averaging everything to death.
+        #store original operator embeddings
+        orig_op_emb = x_dict['operator'].clone()
+
         #message passing
         for conv in self.convs:
             #HeteroConv expects dicts. We pass edge attributes too.
@@ -145,6 +150,10 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             
             #activation & residual could be added here
             x_dict = {key: x.relu() for key, x in x_dict.items()}
+
+        #mix original + message-passed embeddings
+        #preserve identity while adding context
+        x_dict['operator'] = 0.5 * orig_op_emb + 0.5 * x_dict['operator']
 
         #if a single HeteroData object is passed (not a batch), batch_dict should be tensor of zeros
         if batch_dict is None:
