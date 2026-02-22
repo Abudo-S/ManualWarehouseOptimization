@@ -81,8 +81,26 @@ class GnnDataInstanceBuilder:
         op_ids = df_ops['OID'].unique()
         op_map = {id: i for i, id in enumerate(op_ids)}
         num_ops = len(op_ids)
-        op_id_emb = torch.arange(num_ops, dtype=torch.float) / num_ops #simple normalized ID embedding (can be replaced with learned embeddings if needed)
-        op_id_emb = op_id_emb.unsqueeze(1)  # [num_ops, 1]
+
+        #-STR-node embedding
+        #in case of operator node: the final objective to capture differences between operators to output different activation probabilities
+
+        #simple normalized ID embedding
+        # op_id_emb = torch.arange(num_ops, dtype=torch.float) / num_ops 
+        # op_id_emb = op_id_emb.unsqueeze(1)  # [num_ops, 1]
+
+        #strong positional encoding like transformers (8 dimensions instead of 1)
+        num_ops = len(op_ids)
+        pos_enc_dim = 8  #match or exceed other features
+
+        pos_encodings = []
+        for dim in range(pos_enc_dim):
+            #sinusoidal encoding
+            angle = torch.arange(num_ops, dtype=torch.float) / (10000 ** (2 * dim / pos_enc_dim))
+            pos_encodings.append(torch.sin(angle))
+            pos_encodings.append(torch.cos(angle))
+
+        op_pos_enc = torch.stack(pos_encodings[:pos_enc_dim], dim=1)  #[num_ops, 8]
 
         #actual_assignments = set(zip(df_schedule['Operator_ID'], df_schedule['To_Node']))
 
@@ -143,8 +161,11 @@ class GnnDataInstanceBuilder:
         ops_scaled = scaler.fit_transform(op_feats_raw)
         x_ops = torch.tensor(ops_scaled, dtype=torch.float)
 
-        #id embedding concatenation (simple normalized ID, can be replaced with learned embeddings if needed)
-        x_ops = torch.cat([x_ops, op_id_emb], dim=1)  #now shape [num_ops, 8] instead of [num_ops, 7]
+        #id embedding concatenation (simple normalized ID)
+        #x_ops = torch.cat([x_ops, op_id_emb], dim=1)  #now shape [num_ops, 8] instead of [num_ops, 7]
+
+        #positional encoding concatenation (strong positional encoding like transformers, 8 dimensions instead of 1)
+        x_ops = torch.cat([x_ops, op_pos_enc], dim=1)  #now shape [num_ops, 15] instead of [num_ops, 7]
 
         #for now we exclude the base node from the graph (mission_id = 0) since it doesn't have real features and can cause numerical instability.
         #it can't be assigned to multiple operators in the same route as we need, so it doesn't add much value to the learning process.
@@ -244,7 +265,7 @@ class GnnDataInstanceBuilder:
         #store max processing time in edge attributes for reference (possible denormalization later in decoder)
         #data['operator', 'assign', 'order'].max_val = torch.tensor([max_proc_time])
 
-        #reverse Edge (Order -> Op):  An operator also needs to know about the Orders it might take (to update its own state/embedding)
+        #reverse edge (order -> op):  An operator also needs to know about the Orders it might take (to update its own state/embedding)
         rev_edge_index = data['operator', 'assign', 'order'].edge_index.flip([0])
         
         #same edge attributes (travel time is undirected/symmetric usually)
@@ -316,6 +337,8 @@ class GnnDataInstanceBuilder:
         
         #store schedule_id for reference (can be used for comparison/linking back to original data)
         data.schedule_id = filename.replace('.csv', '') 
+
+        #print("Reverse edges created:", len(data['order', 'rev_assign', 'operator'].edge_index[0]))
 
         return data
 
