@@ -109,8 +109,8 @@ class ScheduleDecoder:
         
         #ghost worker (working but not active)
         #every op in ops_with_work must be in ops_predicted_active
-        set_work = set(ops_with_work.cpu().numpy())
-        set_active = set(ops_predicted_active.cpu().numpy())
+        set_work = set(ops_with_work.view(-1).cpu().numpy())
+        set_active = set(ops_predicted_active.view(-1).cpu().numpy())
         
         ghost_workers = set_work - set_active
         
@@ -254,7 +254,7 @@ class ScheduleDecoder:
         """
         runs decoder -> feasibility checks -> returns verdict
         """
-        
+        np.set_printoptions(suppress=True, precision=6)
         #decode assignments (fix constraints greedily)
         chosen_assign = self.decode_assignment_one_per_order(batch, out['assignment'])
         #print(f"Assignment Probabilities (sample): {out['assignment'].view(-1)[:10].cpu().detach().numpy()}")
@@ -263,9 +263,13 @@ class ScheduleDecoder:
         chosen_seq = (out['sequence'].view(-1) > self.seq_threshold)
         chosen_seq = self.resolve_sequence_conflicts(batch, out['sequence'], chosen_seq)
 
+        #decode activations (thresholding)
+        chosen_act = (out['activation'].view(-1) > self.act_threshold)
+        print(f"Activation Probabilities (sample): {out['activation'].view(-1)[:10].cpu().detach().numpy()}")
+
         #feasibility checks
         #activation consistency
-        act_ok, act_stats = self.check_activation_feasibility(batch, out['activation'], chosen_assign)
+        act_ok, act_stats = self.check_activation_feasibility(batch, chosen_act, chosen_assign)
         
         #sequence consistency
         seq_ok, seq_stats = self.check_sequence_feasibility(batch, chosen_assign, chosen_seq)
@@ -1019,11 +1023,18 @@ if __name__ == "__main__":
         'lr_sequence': 0.001
     }
 
-    #tuned thresholds for feasibility validation 
+    # #tuned thresholds for feasibility validation (B100)
+    # best_thresholds =  {
+    #     'activation': 0.2137,
+    #     'assignment': 0.0321,
+    #     'sequence': 0.1096
+    # }
+
+    #tuned thresholds for feasibility validation (B1000)
     best_thresholds =  {
-        'activation': 0.2137,
-        'assignment': 0.0321,
-        'sequence': 0.1096
+        'activation': 0.7252,
+        'assignment': 0.1126,
+        'sequence': 0.1093
     }
 
     model = MultiCriteriaGNNModel(
@@ -1063,6 +1074,8 @@ if __name__ == "__main__":
         batch = batch.to(device)
         batch_dict = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
 
+        #op_embd = schedule_evaluator.diagnose_operator_embeddings(model, batch)
+
         print(f"Evaluating schedule_id: {batch.schedule_id[0]}")
 
         if batch['order'].num_nodes < 2:
@@ -1079,7 +1092,7 @@ if __name__ == "__main__":
         #print(report)
         if is_valid:
             print(f"Schedule [{idx}] is Feasible!")
-            #safe to calculate optimality gap using report["masks"]
+            #safe to calculate optimality gap
             pass
         else:
             print(f"Schedule [{idx}] is NOT Feasible!")
