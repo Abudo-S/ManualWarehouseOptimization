@@ -148,7 +148,7 @@ class ScheduleEvaluator:
                 for i in range(op_emb.size(0)):
                     for j in range(i+1, op_emb.size(0)):
                         diff = (op_emb[i] - op_emb[j]).abs().mean()
-                        pairwise_diffs.append(diff.cpu().item())
+                        pairwise_diffs.append(diff.detach().cpu().numpy())
                 print(f"Mean pairwise diff: {np.mean(pairwise_diffs):.6f}")
                 print(f"Max pairwise diff: {np.max(pairwise_diffs):.6f}")
             
