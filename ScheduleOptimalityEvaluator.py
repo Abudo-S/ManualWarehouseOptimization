@@ -141,20 +141,20 @@ class ScheduleOptimalityEvaluator:
             with open(pred_path) as f:
                 pred = json.load(f)
 
-            pred_activations = len(pred["operators"])  #number of operators used in the predicted schedule
+            pred_activation = len(pred["operators"])  #number of operators used in the predicted schedule
     
             df_opt = pd.read_csv(opt_path)
-            opt_activations = len(df_opt["Operator"]) #number of operators used in the optimal schedule (assuming operator IDs are sequential and start from 1)
+            opt_activation = len(df_opt["Operator"].unique()) #number of unique operators used in the optimal schedule (assuming operator IDs are sequential and start from 1)
 
-            optimality_gap = (pred_activations - opt_activations) / opt_activations if opt_activations > 0 else float('inf')
+            optimality_gap = (pred_activation - opt_activation) / opt_activation if opt_activation > 0 else float('inf')
 
             overall_results.append({
                 'batch_num': batch_num,
                 'alpha': alpha,
                 'beta': beta,
                 'h_fixed': h_fixed,
-                'pred_activations': pred_activations,
-                'opt_activations': opt_activations,
+                'pred_activation': pred_activation,
+                'opt_activation': opt_activation,
                 'optimality_gap': round(optimality_gap, 4) * 100 #convert to percentage
             })
             
@@ -191,7 +191,7 @@ class ScheduleOptimalityEvaluator:
 
             df_opt = pd.read_csv(opt_path)
             opt_makespan = df_opt.groupby("Operator")["Finish"].max().sum() 
-            opt_activations = len(df_opt["Operator"]) #number of operators used in the optimal schedule
+            opt_activations = len(df_opt["Operator"].unique()) #number of unique operators used in the optimal schedule
 
             makespan_opt_gap = (pred_makespan - opt_makespan) / opt_makespan if opt_makespan > 0 else float('inf')
             activation_opt_gap = (pred_activations - opt_activations) / opt_activations if opt_activations > 0 else float('inf')
@@ -200,6 +200,8 @@ class ScheduleOptimalityEvaluator:
             alpha = alpha / (alpha + beta)
             beta = beta / (alpha + beta)
 
+            combined_score = alpha * pred_makespan + beta * pred_activations
+            combined_opt_score = alpha * opt_makespan + beta * opt_activations
             combined_opt_gap = abs(alpha * makespan_opt_gap + beta * activation_opt_gap)
 
             overall_results.append({
@@ -211,6 +213,8 @@ class ScheduleOptimalityEvaluator:
                 'opt_makespan': opt_makespan,
                 'pred_activations': pred_activations,
                 'opt_activations': opt_activations,
+                'combined_pred_score': combined_score,
+                'combined_opt_score': combined_opt_score,
                 'makespan_opt_gap': round(makespan_opt_gap, 4) * 100, #convert to percentage
                 'activation_opt_gap': round(activation_opt_gap, 4) * 100, #convert to percentage
                 'combined_opt_gap': round(combined_opt_gap, 4) * 100 #convert to percentage
