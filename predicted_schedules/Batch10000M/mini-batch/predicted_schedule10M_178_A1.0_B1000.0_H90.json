@@ -1,0 +1,94 @@
+{
+    "metadata": {
+        "num_orders": 8,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": [
+            "schedule10M_178_A1.0_B1000.0_H90"
+        ],
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 4,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3881961,
+                        "start_time": 0.0,
+                        "finish_time": 10.260000228881836,
+                        "processing_duration": 10.260000228881836,
+                        "travel_duration": 0.0,
+                        "successor": 3881973
+                    },
+                    {
+                        "mission_id": 3881973,
+                        "start_time": 20.5,
+                        "finish_time": 30.76,
+                        "processing_duration": 10.26,
+                        "travel_duration": 10.24,
+                        "successor": 3890742
+                    },
+                    {
+                        "mission_id": 3890742,
+                        "start_time": 41.0,
+                        "finish_time": 51.22,
+                        "processing_duration": 10.22,
+                        "travel_duration": 10.24,
+                        "successor": 3890632
+                    },
+                    {
+                        "mission_id": 3890632,
+                        "start_time": 61.49,
+                        "finish_time": 71.71,
+                        "processing_duration": 10.22,
+                        "travel_duration": 10.28,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 2,
+            "assigned_orders_count": 4,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3890492,
+                        "start_time": 0.0,
+                        "finish_time": 10.213333368301392,
+                        "processing_duration": 10.213333368301392,
+                        "travel_duration": 0.0,
+                        "successor": 3890737
+                    },
+                    {
+                        "mission_id": 3890737,
+                        "start_time": 20.49,
+                        "finish_time": 30.71,
+                        "processing_duration": 10.22,
+                        "travel_duration": 10.28,
+                        "successor": 3890763
+                    },
+                    {
+                        "mission_id": 3890763,
+                        "start_time": 41.0,
+                        "finish_time": 51.24,
+                        "processing_duration": 10.24,
+                        "travel_duration": 10.29,
+                        "successor": 3890770
+                    },
+                    {
+                        "mission_id": 3890770,
+                        "start_time": 61.53,
+                        "finish_time": 71.77,
+                        "processing_duration": 10.24,
+                        "travel_duration": 10.29,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}
