@@ -200,7 +200,7 @@ class ScheduleOptimalityEvaluator:
             alpha = alpha / (alpha + beta)
             beta = beta / (alpha + beta)
 
-            combined_score = alpha * pred_makespan + beta * pred_activations
+            combined_pred_score = alpha * pred_makespan + beta * pred_activations
             combined_opt_score = alpha * opt_makespan + beta * opt_activations
             combined_opt_gap = abs(alpha * makespan_opt_gap + beta * activation_opt_gap)
 
@@ -213,7 +213,7 @@ class ScheduleOptimalityEvaluator:
                 'opt_makespan': opt_makespan,
                 'pred_activations': pred_activations,
                 'opt_activations': opt_activations,
-                'combined_pred_score': combined_score,
+                'combined_pred_score': combined_pred_score,
                 'combined_opt_score': combined_opt_score,
                 'makespan_opt_gap': round(makespan_opt_gap, 4) * 100, #convert to percentage
                 'activation_opt_gap': round(activation_opt_gap, 4) * 100, #convert to percentage
