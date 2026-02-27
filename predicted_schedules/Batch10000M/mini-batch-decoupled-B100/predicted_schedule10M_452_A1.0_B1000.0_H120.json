@@ -1,0 +1,62 @@
+{
+    "metadata": {
+        "num_orders": 5,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": [
+            "schedule10M_452_A1.0_B1000.0_H120"
+        ],
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 5,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3878715,
+                        "start_time": 0.0,
+                        "finish_time": 11.356953084468842,
+                        "processing_duration": 11.356953084468842,
+                        "travel_duration": 0.0,
+                        "successor": 3888223
+                    },
+                    {
+                        "mission_id": 3888223,
+                        "start_time": 22.38,
+                        "finish_time": 33.78,
+                        "processing_duration": 11.4,
+                        "travel_duration": 11.02,
+                        "successor": 3891375
+                    },
+                    {
+                        "mission_id": 3891375,
+                        "start_time": 44.74,
+                        "finish_time": 55.92,
+                        "processing_duration": 11.18,
+                        "travel_duration": 10.96,
+                        "successor": 3885263
+                    },
+                    {
+                        "mission_id": 3885263,
+                        "start_time": 66.82,
+                        "finish_time": 77.99,
+                        "processing_duration": 11.18,
+                        "travel_duration": 10.9,
+                        "successor": 3891064
+                    },
+                    {
+                        "mission_id": 3891064,
+                        "start_time": 88.93,
+                        "finish_time": 100.14,
+                        "processing_duration": 11.21,
+                        "travel_duration": 10.94,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}

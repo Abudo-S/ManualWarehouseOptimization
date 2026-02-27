@@ -1,0 +1,126 @@
+{
+    "metadata": {
+        "num_orders": 8,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": [
+            "schedule10M_408_A1.0_B1000.0_H90"
+        ],
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3881681,
+                        "start_time": 0.0,
+                        "finish_time": 11.283333599567413,
+                        "processing_duration": 11.283333599567413,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 2,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3881682,
+                        "start_time": 0.0,
+                        "finish_time": 11.279999613761902,
+                        "processing_duration": 11.279999613761902,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 3,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3884781,
+                        "start_time": 0.0,
+                        "finish_time": 11.276666522026062,
+                        "processing_duration": 11.276666522026062,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 4,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3881640,
+                        "start_time": 0.0,
+                        "finish_time": 11.23333364725113,
+                        "processing_duration": 11.23333364725113,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 5,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3888221,
+                        "start_time": 0.0,
+                        "finish_time": 11.293332874774933,
+                        "processing_duration": 11.293332874774933,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 37,
+            "assigned_orders_count": 3,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3878300,
+                        "start_time": 0.0,
+                        "finish_time": 10.871192514896393,
+                        "processing_duration": 10.871192514896393,
+                        "travel_duration": 0.0,
+                        "successor": 3888233
+                    },
+                    {
+                        "mission_id": 3888233,
+                        "start_time": 22.01,
+                        "finish_time": 32.96,
+                        "processing_duration": 10.94,
+                        "travel_duration": 11.14,
+                        "successor": 3890791
+                    },
+                    {
+                        "mission_id": 3890791,
+                        "start_time": 44.09,
+                        "finish_time": 55.04,
+                        "processing_duration": 10.94,
+                        "travel_duration": 11.14,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}
