@@ -187,21 +187,21 @@ class ScheduleOptimalityEvaluator:
                         route.sort(key=lambda x: x["finish_time"])
                         pred_makespan += route[-1]["finish_time"] 
 
-            pred_activations = len(pred["operators"]) #number of operators used in the predicted schedule
+            pred_activation = len(pred["operators"]) #number of operators used in the predicted schedule
 
             df_opt = pd.read_csv(opt_path)
             opt_makespan = df_opt.groupby("Operator")["Finish"].max().sum() 
-            opt_activations = len(df_opt["Operator"].unique()) #number of unique operators used in the optimal schedule
+            opt_activation = len(df_opt["Operator"].unique()) #number of unique operators used in the optimal schedule
 
             makespan_opt_gap = (pred_makespan - opt_makespan) / opt_makespan if opt_makespan > 0 else float('inf')
-            activation_opt_gap = (pred_activations - opt_activations) / opt_activations if opt_activations > 0 else float('inf')
+            activation_opt_gap = (pred_activation - opt_activation) / opt_activation if opt_activation > 0 else float('inf')
 
             #normalize alpha, beta to sum to 1 for weighting
             alpha = alpha / (alpha + beta)
             beta = beta / (alpha + beta)
 
-            combined_pred_score = alpha * pred_makespan + beta * pred_activations
-            combined_opt_score = alpha * opt_makespan + beta * opt_activations
+            combined_pred_score = alpha * pred_makespan + beta * pred_activation
+            combined_opt_score = alpha * opt_makespan + beta * opt_activation
             combined_opt_gap = abs(alpha * makespan_opt_gap + beta * activation_opt_gap)
 
             overall_results.append({
@@ -211,8 +211,8 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed,
                 'pred_makespan': pred_makespan,
                 'opt_makespan': opt_makespan,
-                'pred_activations': pred_activations,
-                'opt_activations': opt_activations,
+                'pred_activations': pred_activation,
+                'opt_activations': opt_activation,
                 'combined_pred_score': combined_pred_score,
                 'combined_opt_score': combined_opt_score,
                 'makespan_opt_gap': round(makespan_opt_gap, 4) * 100, #convert to percentage
