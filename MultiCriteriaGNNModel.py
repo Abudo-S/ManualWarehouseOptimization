@@ -108,9 +108,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         )
         
         #sequence head (edge classification for order -> order)
-        #input: order_embedding_i + order_embedding_j + global + edge_Attr (time)
+        #input: order_embedding_i + order_embedding_j + global + edge_Attr (time) + shared_op_score (predicted by assignment head for both orders)
+        #64 + 64 + 3 + 1 + 1 = 133
         self.seq_head = Sequential(
-            Linear(2 * hidden_dim + 3 + 1, hidden_dim),
+            #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without assignment feedback
+            Linear(2 * hidden_dim + 5, hidden_dim),
             ReLU(),
             Linear(hidden_dim, 1)
         )
@@ -198,7 +200,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         edge_batch_indices = op_batch[src_idx] 
         u_edges = u[edge_batch_indices] #match batch size for multiple graphs, shape: [num_edges, 3]
         
-        #head coupling addition: fetch the predicted activation probability for the source operator
+        #STR- assignment-activation coupling
         op_activation_prob = out_activation[src_idx] 
 
         #concat: [op, order, global, time, op_activation_prob]
@@ -216,14 +218,39 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         ord_emb_j = x_dict['order'][dst_idx]
         edge_attr = edge_attr_dict[('order', 'to', 'order')] #travel Time
         
+        if edge_attr.dim() == 1:
+            edge_attr = edge_attr.unsqueeze(1)
+
         # num_edges = src_idx.size(0)
         # u_edges = u.expand(num_edges, -1)
         ord_batch = batch_dict['order']
         edge_batch_indices = ord_batch[src_idx] # use 'order' node batch
         u_edges = u[edge_batch_indices]
 
+        #STR- sequence-assignment coupling
+        #create a dense probability matrix [num_orders, num_ops]
+        num_orders = x_dict['order'].size(0)
+        num_ops = x_dict['operator'].size(0)
+        assign_prob_matrix = torch.zeros((num_orders, num_ops), device=x_dict['order'].device)
         
-        seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr], dim=1)
+        #fill the matrix with predicted assignment probabilities
+        #assign_idx is [2, num_assign_edges]: [0] is op, [1] is order
+        op_indices = edge_index_dict[('operator', 'assign', 'order')][0]
+        ord_indices = edge_index_dict[('operator', 'assign', 'order')][1]
+        
+        assign_prob_matrix[ord_indices, op_indices] = out_assign.squeeze()
+        
+        #extract the probability vectors for source (i) and destination (j) orders
+        probs_i = assign_prob_matrix[src_idx] #[num_seq_edges, num_ops]
+        probs_j = assign_prob_matrix[dst_idx] #[num_seq_edges, num_ops]
+        
+        #compute the "shared operator score" 
+        #sum of element-wise multiplication across ops
+        #it yields a high value only if both orders have a high probability for the same operator.
+        shared_op_score = torch.sum(probs_i * probs_j, dim=1, keepdim=True) #[num_seq_edges, 1]
+
+        #concat: [ord_i, ord_j, global, time, shared_op_score]
+        seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr, shared_op_score], dim=1)
 
         #the model considers h_fixed by directly concatenating it to the input vector of the final decision head (seq MLP).
         #Which allows the MLPs to learn a decision boundary that depends on h_fixed.
