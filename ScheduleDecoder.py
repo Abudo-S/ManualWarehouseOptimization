@@ -1072,10 +1072,17 @@ if __name__ == "__main__":
     # }
 
     #tuned thresholds for feasibility validation (B1000)
+    # best_thresholds =  {
+    #     'activation': 0.7252,
+    #     'assignment': 0.1126,
+    #     'sequence': 0.1093
+    # }
+
+    #coupled tasks - tuned thresholds for feasibility validation (B1000)
     best_thresholds =  {
-        'activation': 0.7252,
-        'assignment': 0.1126,
-        'sequence': 0.1093
+        'activation': 0.6251,
+        'assignment': 0.1000,
+        'sequence': 0.1153
     }
 
     model = MultiCriteriaGNNModel(
