@@ -102,7 +102,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #64 + 64 + 3 + 1 + 1 = 133
         self.assign_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
-            Linear(2 * hidden_dim + 5, hidden_dim), #added 1 extra dim for op_activation_prob
+            Linear(2 * hidden_dim + 5, hidden_dim), #added 1 extra dim for op_activation_prob (activation coupling)
             ReLU(),
             Linear(hidden_dim, 1)
         )
@@ -110,9 +110,12 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #sequence head (edge classification for order -> order)
         #input: order_embedding_i + order_embedding_j + global + edge_Attr (time) + shared_op_score (predicted by assignment head for both orders)
         #64 + 64 + 3 + 1 + 1 = 133
+        #input: order_embedding_i + order_embedding_j + global + edge_Attr (time) + shared_op_score, active_shared_score
+        #64 + 64 + 3 + 1 + 1 + 1 = 134
         self.seq_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without assignment feedback
-            Linear(2 * hidden_dim + 5, hidden_dim),
+            #Linear(2 * hidden_dim + 5, hidden_dim), #explicit coupling to assignment; therefore, implicit coupling to activation (though assignment)
+            Linear(2 * hidden_dim + 6, hidden_dim), #explicit coupling to assignment & activation
             ReLU(),
             Linear(hidden_dim, 1)
         )
@@ -240,6 +243,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         assign_prob_matrix[ord_indices, op_indices] = out_assign.squeeze()
         
+        #get activation probs
+        act_probs_1d = out_activation.squeeze() 
+
         #extract the probability vectors for source (i) and destination (j) orders
         probs_i = assign_prob_matrix[src_idx] #[num_seq_edges, num_ops]
         probs_j = assign_prob_matrix[dst_idx] #[num_seq_edges, num_ops]
@@ -249,8 +255,17 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #it yields a high value only if both orders have a high probability for the same operator.
         shared_op_score = torch.sum(probs_i * probs_j, dim=1, keepdim=True) #[num_seq_edges, 1]
 
+        #compute active shared operator score (aActivation coupling) to avoid the possibile vanishing activation MLPS trough assignment head
+        #we weight the assignment overlap by the activation probability of the operator
+        active_shared_score = torch.sum(probs_i * probs_j * act_probs_1d, dim=1, keepdim=True)
+
         #concat: [ord_i, ord_j, global, time, shared_op_score]
-        seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr, shared_op_score], dim=1)
+        #implicit activation MLP signal should be passed through the assignment head; therefore, shared_op_score ()
+        #seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr, shared_op_score, active_shared_score], dim=1)
+
+        #concat: [ord_i, ord_j, global, time, shared_op_score]
+        #explicit activation MLP signal passed directly in active_shared_score
+        seq_input = torch.cat([ord_emb_i, ord_emb_j, u_edges, edge_attr, shared_op_score, active_shared_score], dim=1)
 
         #the model considers h_fixed by directly concatenating it to the input vector of the final decision head (seq MLP).
         #Which allows the MLPs to learn a decision boundary that depends on h_fixed.
