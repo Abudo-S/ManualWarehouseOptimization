@@ -12,7 +12,39 @@
     "operators": [
         {
             "operator_id": 1,
-            "assigned_orders_count": 5,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3894239,
+                        "start_time": 0.0,
+                        "finish_time": 10.539999604225159,
+                        "processing_duration": 10.539999604225159,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 2,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3894250,
+                        "start_time": 0.0,
+                        "finish_time": 10.539999604225159,
+                        "processing_duration": 10.539999604225159,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 3,
+            "assigned_orders_count": 3,
             "routes": [
                 [
                     {
@@ -37,22 +69,6 @@
                         "finish_time": 52.82,
                         "processing_duration": 10.62,
                         "travel_duration": 10.49,
-                        "successor": 3894239
-                    },
-                    {
-                        "mission_id": 3894239,
-                        "start_time": 63.3,
-                        "finish_time": 73.84,
-                        "processing_duration": 10.54,
-                        "travel_duration": 10.47,
-                        "successor": 3894250
-                    },
-                    {
-                        "mission_id": 3894250,
-                        "start_time": 84.3,
-                        "finish_time": 94.84,
-                        "processing_duration": 10.54,
-                        "travel_duration": 10.46,
                         "successor": null
                     }
                 ]

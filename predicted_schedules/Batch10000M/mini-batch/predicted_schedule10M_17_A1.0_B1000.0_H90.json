@@ -16,31 +16,31 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3883322,
+                        "mission_id": 3884039,
                         "start_time": 0.0,
                         "finish_time": 11.210000216960907,
                         "processing_duration": 11.210000216960907,
                         "travel_duration": 0.0,
-                        "successor": 3887270
+                        "successor": 3885174
                     },
                     {
-                        "mission_id": 3887270,
+                        "mission_id": 3885174,
                         "start_time": 21.97,
                         "finish_time": 33.18,
-                        "processing_duration": 11.21,
-                        "travel_duration": 10.76,
-                        "successor": 3884039
-                    },
-                    {
-                        "mission_id": 3884039,
-                        "start_time": 43.95,
-                        "finish_time": 55.16,
                         "processing_duration": 11.21,
                         "travel_duration": 10.76,
                         "successor": 3885082
                     },
                     {
                         "mission_id": 3885082,
+                        "start_time": 43.95,
+                        "finish_time": 55.16,
+                        "processing_duration": 11.21,
+                        "travel_duration": 10.76,
+                        "successor": 3887270
+                    },
+                    {
+                        "mission_id": 3887270,
                         "start_time": 65.92,
                         "finish_time": 77.13,
                         "processing_duration": 11.21,
@@ -56,7 +56,7 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3885174,
+                        "mission_id": 3883322,
                         "start_time": 0.0,
                         "finish_time": 11.210000216960907,
                         "processing_duration": 11.210000216960907,

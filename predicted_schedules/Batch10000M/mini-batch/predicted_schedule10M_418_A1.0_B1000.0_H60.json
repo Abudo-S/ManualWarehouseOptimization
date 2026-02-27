@@ -16,27 +16,27 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3876909,
+                        "mission_id": 3872255,
                         "start_time": 0.0,
-                        "finish_time": 10.166667401790619,
-                        "processing_duration": 10.166667401790619,
+                        "finish_time": 10.129999816417694,
+                        "processing_duration": 10.129999816417694,
                         "travel_duration": 0.0,
-                        "successor": 3886918
+                        "successor": 3876943
                     },
                     {
-                        "mission_id": 3886918,
-                        "start_time": 20.28,
-                        "finish_time": 30.43,
-                        "processing_duration": 10.15,
-                        "travel_duration": 10.11,
-                        "successor": 3888153
+                        "mission_id": 3876943,
+                        "start_time": 20.25,
+                        "finish_time": 30.45,
+                        "processing_duration": 10.2,
+                        "travel_duration": 10.12,
+                        "successor": 3876909
                     },
                     {
-                        "mission_id": 3888153,
-                        "start_time": 40.56,
-                        "finish_time": 50.71,
-                        "processing_duration": 10.15,
-                        "travel_duration": 10.13,
+                        "mission_id": 3876909,
+                        "start_time": 40.6,
+                        "finish_time": 50.77,
+                        "processing_duration": 10.17,
+                        "travel_duration": 10.15,
                         "successor": null
                     }
                 ]
@@ -48,27 +48,27 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3872255,
-                        "start_time": 0.0,
-                        "finish_time": 10.129999816417694,
-                        "processing_duration": 10.129999816417694,
-                        "travel_duration": 0.0,
-                        "successor": 3888138
-                    },
-                    {
                         "mission_id": 3888138,
-                        "start_time": 20.22,
-                        "finish_time": 30.37,
-                        "processing_duration": 10.15,
-                        "travel_duration": 10.09,
-                        "successor": 3888341
+                        "start_time": 0.0,
+                        "finish_time": 10.146666169166565,
+                        "processing_duration": 10.146666169166565,
+                        "travel_duration": 0.0,
+                        "successor": 3886918
                     },
                     {
-                        "mission_id": 3888341,
-                        "start_time": 40.51,
-                        "finish_time": 50.64,
-                        "processing_duration": 10.13,
-                        "travel_duration": 10.14,
+                        "mission_id": 3886918,
+                        "start_time": 20.26,
+                        "finish_time": 30.41,
+                        "processing_duration": 10.15,
+                        "travel_duration": 10.11,
+                        "successor": 3888153
+                    },
+                    {
+                        "mission_id": 3888153,
+                        "start_time": 40.54,
+                        "finish_time": 50.7,
+                        "processing_duration": 10.15,
+                        "travel_duration": 10.13,
                         "successor": null
                     }
                 ]
@@ -80,10 +80,10 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3876943,
+                        "mission_id": 3888341,
                         "start_time": 0.0,
-                        "finish_time": 10.19666701555252,
-                        "processing_duration": 10.19666701555252,
+                        "finish_time": 10.129999816417694,
+                        "processing_duration": 10.129999816417694,
                         "travel_duration": 0.0,
                         "successor": null
                     }

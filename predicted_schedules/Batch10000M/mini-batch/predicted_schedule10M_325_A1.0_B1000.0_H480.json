@@ -12,31 +12,7 @@
     "operators": [
         {
             "operator_id": 1,
-            "assigned_orders_count": 2,
-            "routes": [
-                [
-                    {
-                        "mission_id": 3891412,
-                        "start_time": 0.0,
-                        "finish_time": 11.236666738986969,
-                        "processing_duration": 11.236666738986969,
-                        "travel_duration": 0.0,
-                        "successor": 3891480
-                    },
-                    {
-                        "mission_id": 3891480,
-                        "start_time": 22.24,
-                        "finish_time": 33.56,
-                        "processing_duration": 11.32,
-                        "travel_duration": 11.01,
-                        "successor": null
-                    }
-                ]
-            ]
-        },
-        {
-            "operator_id": 2,
-            "assigned_orders_count": 1,
+            "assigned_orders_count": 3,
             "routes": [
                 [
                     {
@@ -45,6 +21,22 @@
                         "finish_time": 11.270000338554382,
                         "processing_duration": 11.270000338554382,
                         "travel_duration": 0.0,
+                        "successor": 3891480
+                    },
+                    {
+                        "mission_id": 3891480,
+                        "start_time": 22.31,
+                        "finish_time": 33.63,
+                        "processing_duration": 11.32,
+                        "travel_duration": 11.04,
+                        "successor": 3891412
+                    },
+                    {
+                        "mission_id": 3891412,
+                        "start_time": 44.63,
+                        "finish_time": 55.87,
+                        "processing_duration": 11.24,
+                        "travel_duration": 11.01,
                         "successor": null
                     }
                 ]
