@@ -98,10 +98,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         )
         
         #assignment head (edge classification for op i -> order j)
-        #input: op_embedding + order_embedding + global + edge_attr (time)
-        #64 + 64 + 3 + 1 = 132
+        #input: op_embedding + order_embedding + global + edge_attr (time) + op_activation_prob (predicted by activation head)
+        #64 + 64 + 3 + 1 + 1 = 133
         self.assign_head = Sequential(
-            Linear(2 * hidden_dim + 3 + 1, hidden_dim),
+            #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
+            Linear(2 * hidden_dim + 5, hidden_dim), #added 1 extra dim for op_activation_prob
             ReLU(),
             Linear(hidden_dim, 1)
         )
@@ -170,12 +171,14 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #expand u: [1, 3] -> [num_ops, 3]
         op_batch = batch_dict['operator']
         u_ops = u[op_batch] #match batch size for multiple graphs, shape: [num_ops, 3]
+        op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
         #num_ops = x_dict['operator'].size(0)
         #u_ops = u.expand(num_ops, -1)
         
         #print((u_ops, x_dict['operator'])) #debugging before concat
 
         #concat: [op_emb, global]
+        #we'll need the raw logits or probabilities to feed to the next head
         op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
         #apply sigmoid to squash raw logits to [0, 1] probability
         out_activation = torch.sigmoid(self.activation_head(op_feat_final))
@@ -195,8 +198,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         edge_batch_indices = op_batch[src_idx] 
         u_edges = u[edge_batch_indices] #match batch size for multiple graphs, shape: [num_edges, 3]
         
-        #concat: [op, order, global, time]
-        assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr], dim=1)
+        #head coupling addition: fetch the predicted activation probability for the source operator
+        op_activation_prob = out_activation[src_idx] 
+
+        #concat: [op, order, global, time, op_activation_prob]
+        assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr, op_activation_prob], dim=1)
 
         #the model considers h_fixed by directly concatenating it to the input vector of the final decision head (assign MLP).
         #Which allows the MLPs to learn a decision boundary that depends on h_fixed.
