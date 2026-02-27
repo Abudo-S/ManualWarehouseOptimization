@@ -290,7 +290,11 @@ class ScheduleDecoder:
             "act_ok": act_ok, "act_errs": act_stats,
             "seq_ok": seq_ok, "seq_errs": seq_stats,
             "assign_ok": assign_ok, "unassigned": unassigned,
-            "masks": {"assign": chosen_assign, "seq": chosen_seq}  #masks for optimality gap calculation
+            "masks": { #masks for schedule building
+                "act": chosen_act,
+                "assign": chosen_assign,
+                "seq": chosen_seq
+            }  
         }
         
         return is_valid, report
@@ -748,7 +752,7 @@ class ScheduleDecoder:
             val = float(assign_attr[i][0]) if assign_attr.ndim > 1 else float(assign_attr[i])
             proc_time_map[(assign_idx[0,i], assign_idx[1,i])] = val * global_time_scale
 
-        #travel time (Order -> Order): (u, v) -> p time
+        #travel time (Order -> Order): (u, v) -> t time
         travel_time_map = {}
         seq_attr = batch.edge_attr_dict[('order', 'to', 'order')].cpu().numpy()
         for i in range(seq_idx.shape[1]):
@@ -770,29 +774,66 @@ class ScheduleDecoder:
         all_mission_ids = batch['order'].global_id.cpu().tolist()
         all_operator_ids = batch['operator'].global_id.cpu().tolist()
         num_orders = batch['order'].num_nodes
+        
+        #build the set of active operators from the activation mask
+        chosen_act_mask = report["masks"]["act"].cpu().numpy()  #bool array [num_ops]
+        active_ops = set(np.where(chosen_act_mask)[0])
+
+        #if no operators pass the threshold, use top-k
+        if not active_ops:
+            print("Warning: no active operators from activation mask, using top-k fallback.")
+            act_probs = out['activation'].view(-1).cpu().numpy()
+            k = max(1, int(batch['operator'].num_nodes * 0.3))
+            active_ops = set(np.argsort(act_probs)[-k:].tolist())
 
         #preference groups per order
         #map: order_id -> list of dicts [{'prob': 0.9, 'ops': [1, 5]}, ...]
         order_preferences = {}
-        temp_prefs = {} 
+        temp_prefs = {o: {} for o in range(num_orders)} #initialize for all orders
         
+
         for i in range(p_assign.shape[0]):
             op = int(assign_idx[0, i])
             order = int(assign_idx[1, i])
             prob = float(p_assign[i])
+            
             if prob > 0.001: 
+                #to its probability. This ensures active ops are always placed in 
+                #buckets that are sorted before inactive ops.
+                priority_boost = 10.0 if op in active_ops else 0.0
+                effective_prob = prob + priority_boost
+
                 #round to 4 decimals to detect "ties" effectively
                 #(e.g., 0.9123 and 0.9124 might be treated as different buckets without rounding)
-                prob_key = round(prob, 4) 
-                if order not in temp_prefs: temp_prefs[order] = {}
-                if prob_key not in temp_prefs[order]: temp_prefs[order][prob_key] = []
+                prob_key = round(effective_prob, 4) 
+                
+                if prob_key not in temp_prefs[order]: 
+                    temp_prefs[order][prob_key] = []
                 temp_prefs[order][prob_key].append(op)
         
-        for o, groups in temp_prefs.items():
+        #format and add fallback for orders with no valid probs
+        all_ops_list = list(range(int(batch['operator'].num_nodes)))
+
+        for o in range(num_orders):
+            groups = temp_prefs[o]
+            
+            #if an order has no operators with prob > 0.001, we must provide a fallback
+            #otherwise it immediately becomes a 'dead_order' and is left unassigned.
+            if not groups:
+                order_preferences[o] = [{'prob': 0.0, 'ops': all_ops_list}]
+                continue
+
             sorted_probs = sorted(groups.keys(), reverse=True)
             order_preferences[o] = []
             for p in sorted_probs:
-                order_preferences[o].append({'prob': p, 'ops': groups[p]})
+                orig_prob = p - 10.0 if p >= 10.0 else p
+                order_preferences[o].append({'prob': orig_prob, 'ops': groups[p]})
+
+            #filter out ops already present in previous buckets to avoid redundancy.
+            seen_ops = set(op for b in order_preferences[o] for op in b['ops'])
+            remaining_ops = [op for op in all_ops_list if op not in seen_ops]
+            if remaining_ops:
+                order_preferences[o].append({'prob': 0.0, 'ops': remaining_ops})
 
         #state tracking
         #order_bucket_idx[o] = k means trying the k-th probability bucket
