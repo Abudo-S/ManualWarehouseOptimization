@@ -377,7 +377,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
 
         #iterate through grid
         for i, config in enumerate(combinations):
-            if i < start_config_num: #used to continue a previous execution (fact: itertools.product generate the same order of combinations each time)
+            if i < (start_config_num - 1): #used to continue a previous execution (fact: itertools.product generate the same order of combinations each time)
                 continue
 
             print(f"\n---Running config {i+1}/{len(combinations)}---")
