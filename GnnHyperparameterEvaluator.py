@@ -357,7 +357,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
             return self.train_and_evaluate_single_optimizer(config, dataset, k_folds)
     
     
-    def run_kfold_grid_search(self, dataset, param_grid, k_folds=N_FOLDS):
+    def run_kfold_grid_search(self, dataset, param_grid, k_folds=N_FOLDS, start_config_num=1, min_f1=0.0):
         """
         Returns:
             best_config, best_threshold, best_score
@@ -371,12 +371,15 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         best_score = -1.0
         best_config = None
-        best_threshold = self.default_threshold # default init
+        best_threshold = self.default_threshold #default init
         
         results_log = []
 
         #iterate through grid
         for i, config in enumerate(combinations):
+            if i < start_config_num: #used to continue a previous execution (fact: itertools.product generate the same order of combinations each time)
+                continue
+
             print(f"\n---Running config {i+1}/{len(combinations)}---")
             print(config)
             
@@ -407,7 +410,10 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                     best_score = avg_f1
                     best_config = config
                     best_threshold = avg_thresh
-                    print(">>>New best configuration found!<<<")
+
+                    if best_score > min_f1:
+                        min_f1 = best_score
+                        print(">>>New best configuration found!<<<")
                     
             except Exception as e:
                 print(f"Error running config {config}: {str(e)}")
