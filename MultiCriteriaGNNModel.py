@@ -13,13 +13,15 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                  hidden_dim=64, 
                  num_layers=3, 
                  heads=4, 
-                 dropout=0.2):
+                 dropout=0.2,
+                 heuristic_boost_factor=1.15):
         '''
         metadata: Tuple of (node_types, edge_types) from the heterogeneous graph
         hidden_dim: Dimension of hidden embeddings
         num_layers: Number of GNN layers
         heads: Number of attention heads in GATv2
         dropout: Dropout rate for GATv2 layers to regularize the attention mechanism.
+        heuristic_boost_factor: Used to travel+processing time estimation to give an initial start to activation head with minimum_ops. (ex. +15%)
         (e.g., max time in minutes) to [0,1] range for better training stability.
         defines a multi-criteria GNN model with three heads:
         1.Activation Head: Classifies operator nodes as active/inactive
@@ -32,11 +34,15 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         to bring them to a similar scale as the node features.
         '''
         super().__init__()
+
+        assert heuristic_boost_factor >= 1.0,\
+        "heuristic_boost_factor should be > 1.0"
         
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.heads = heads
         self.dropout = dropout
+        self.heuristic_boost_factor = heuristic_boost_factor
 
         #node encoders (project raw features to hidden dim)
         self.order_lin = Linear(10, hidden_dim) # mission features: 'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'FROM_X', 'FROM_Y', 'FROM_Z','TO_X', 'TO_Y', 'TO_Z'
@@ -88,7 +94,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         #global context (u) has 3 dims: [Alpha, Beta, H_fixed]
         #we concat node_embedding (64) + global (3) = 67 inputs
-        input_dim_with_global = hidden_dim + 3
+        #+1 dim: [min_ops_needed]
+        #input_dim_with_global = hidden_dim + 3
+        input_dim_with_global = hidden_dim + 3 + 1
         
         #activation head (node classification for operators)
         self.activation_head = Sequential(
@@ -182,9 +190,46 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         #print((u_ops, x_dict['operator'])) #debugging before concat
 
-        #concat: [op_emb, global]
+        #STR- compute heuristic demand for activation head
+        #assuming that batch_dict['order'] exists to group orders per graph in the batch
+        assign_edges = edge_index_dict[('operator', 'assign', 'order')]
+        proc_times = edge_attr_dict[('operator', 'assign', 'order')].squeeze(-1)
+        num_orders = x_dict['order'].size(0)
+        num_graphs = u.size(0)
+        
+        #target node indices (orders)
+        order_indices = assign_edges[1]
+        
+        sum_proc_per_order = torch.zeros(num_orders, dtype=proc_times.dtype, device=x_dict['order'].device)
+        sum_proc_per_order.index_add_(0, order_indices, proc_times)
+        
+        count_per_order = torch.zeros(num_orders, dtype=proc_times.dtype, device=x_dict['order'].device)
+        count_per_order.index_add_(0, order_indices, torch.ones_like(proc_times))
+        
+        #avoid division by zero for isolated nodes
+        avg_proc_per_order = sum_proc_per_order / count_per_order.clamp(min=1.0)
+
+        #sum the order workloads per graph (batch) using index_add_
+        order_batch = batch_dict['order']
+        total_workload_per_batch = torch.zeros(num_graphs, dtype=proc_times.dtype, device=x_dict['order'].device)
+        total_workload_per_batch.index_add_(0, order_batch, avg_proc_per_order)
+
+        #calculate min ops needed (total_workload / h_fixed)
+        #u[:, 2] is h_fixed (normalized)
+        h_fixed_norm = u[:, 2] 
+        #add epsilon to prevent division by zero just in case
+        min_ops_needed = total_workload_per_batch / (h_fixed_norm + 1e-6)
+        
+        #add a simple heuristic factor for travel time
+        min_ops_needed = min_ops_needed * self.heuristic_boost_factor
+
+        #broadcast back to operators
+        op_demand_feature = min_ops_needed[batch_dict['operator']]
+
+        #concat: [op_emb, global, op_demand]
         #we'll need the raw logits or probabilities to feed to the next head
-        op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
+        #op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
+        op_feat_final = torch.cat([x_dict['operator'], u_ops, op_demand_feature.unsqueeze(1)], dim=1) #add minimum estimated ops
         #apply sigmoid to squash raw logits to [0, 1] probability
         out_activation = torch.sigmoid(self.activation_head(op_feat_final))
 
