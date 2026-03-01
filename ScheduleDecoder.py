@@ -1331,6 +1331,48 @@ class ScheduleDecoder:
             #send rejected orders back to the pool
             orders_to_assign = rejected_orders
 
+        #STR- tail insertion for unassigned orders (orders that were assigned inactive ops who have act_prob < act_threhold)
+        #try to fit rejected orders_to_assign into final_op_routes[op] 
+        if orders_to_assign:
+            print(f"Tail-insertion pass: {len(orders_to_assign)} orders still unassigned")
+
+            for o in list(orders_to_assign):
+                best_op = None
+                best_finish = None
+                
+                for op in active_ops:  # Only try active operators
+                    route = final_op_routes.get(op, [])
+                    curr_finish = route[-1]["finish_time"] if route else 0.0
+                    t_proc = proc_time_map.get((op, o), 0.0)
+                    finish = curr_finish + t_proc
+
+                    if finish <= h_fixed_mins:
+                        if best_finish is None or finish < best_finish:
+                            best_finish = finish
+                            best_op = op
+
+                if best_op is not None:
+                    route = final_op_routes[best_op]
+                    start_time = route[-1]["finish_time"] if route else 0.0
+                    step = {
+                        "mission_id": all_mission_ids[o],
+                        "_internal": o,
+                        "start_time": round(start_time, 2),
+                        "finish_time": round(start_time + t_proc, 2),
+                        "processing_duration": round(t_proc, 2),
+                        "travel_duration": 0.0,
+                        "successor": None,
+                    }
+
+                    if route:
+                        route[-1]["successor"] = all_mission_ids[o]
+
+                    route.append(step)
+                    orders_to_assign.remove(o)
+
+                    print(f"Tail-inserted order {o} to Op {best_op}")
+
+
         #reconstruct schedule with timings
         schedule_data = {
             "metadata": {
