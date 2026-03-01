@@ -2,10 +2,8 @@
     "metadata": {
         "num_orders": 3,
         "num_operators": 10,
-        "valid": true,
-        "schedule_id": [
-            "schedule10M_280_A1.0_B1000.0_H480"
-        ],
+        "valid": false,
+        "schedule_id": "schedule10M_280_A1.0_B1000.0_H480",
         "horizon_valid": true,
         "horizon_violations": []
     },
@@ -29,22 +27,6 @@
                         "finish_time": 31.7,
                         "processing_duration": 10.59,
                         "travel_duration": 10.57,
-                        "successor": null
-                    }
-                ]
-            ]
-        },
-        {
-            "operator_id": 2,
-            "assigned_orders_count": 1,
-            "routes": [
-                [
-                    {
-                        "mission_id": 3884767,
-                        "start_time": 0.0,
-                        "finish_time": 10.626667141914368,
-                        "processing_duration": 10.626667141914368,
-                        "travel_duration": 0.0,
                         "successor": null
                     }
                 ]
