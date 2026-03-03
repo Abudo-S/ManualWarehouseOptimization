@@ -19,18 +19,18 @@
                         "finish_time": 11.210000216960907,
                         "processing_duration": 11.210000216960907,
                         "travel_duration": 0.0,
-                        "successor": 3878371
-                    },
-                    {
-                        "mission_id": 3878371,
-                        "start_time": 21.97,
-                        "finish_time": 33.18,
-                        "processing_duration": 11.21,
-                        "travel_duration": 10.76,
                         "successor": 3883676
                     },
                     {
                         "mission_id": 3883676,
+                        "start_time": 21.97,
+                        "finish_time": 33.18,
+                        "processing_duration": 11.21,
+                        "travel_duration": 10.76,
+                        "successor": 3878371
+                    },
+                    {
+                        "mission_id": 3878371,
                         "start_time": 43.95,
                         "finish_time": 55.16,
                         "processing_duration": 11.21,
@@ -42,21 +42,13 @@
         },
         {
             "operator_id": 2,
-            "assigned_orders_count": 2,
+            "assigned_orders_count": 1,
             "routes": [
                 [
                     {
                         "mission_id": 3872079,
                         "start_time": 0.0,
-                        "finish_time": 11.210000216960907,
-                        "processing_duration": 11.210000216960907,
-                        "travel_duration": 0.0,
-                        "successor": 3872079
-                    },
-                    {
-                        "mission_id": 3872079,
-                        "start_time": 11.21,
-                        "finish_time": 22.42,
+                        "finish_time": 11.21,
                         "processing_duration": 11.21,
                         "travel_duration": 0.0,
                         "successor": null
