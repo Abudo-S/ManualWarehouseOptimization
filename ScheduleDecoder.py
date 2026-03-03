@@ -1039,7 +1039,7 @@ class ScheduleDecoder:
         print(f"Schedule exported with name: {filename}")
     
     @torch.no_grad()
-    def export_schedule_with_timings_v3(self, batch, out, filename="schedule.json"):
+    def export_schedule_with_timings_v3(self, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
         """
         Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
         Activation: select active operators based on model probabilities.
@@ -1047,6 +1047,8 @@ class ScheduleDecoder:
         Sequence: route assigned orders per operator using sequence probs and time constraints.
         If an order fails to route due to H_fixed, it falls back to the next best 
         activation-assignment probability bucket. If all active ops are full, it falls back to inactive ops.
+        if use_extra_ops is True and there're unassigned order, 
+        this mothod is repeated recursively trying to activate extra operators w.r.t. n_extra_ops_to_use.
         Tie-breaking logic steps:
         1.Activation prob (pack into the most confident active ops first)
         2.Raw assignment prob (best specific fit for this exact order)
@@ -1086,7 +1088,7 @@ class ScheduleDecoder:
             val = float(seq_attr[i][0]) if seq_attr.ndim > 1 else float(seq_attr[i])
             travel_time_map[(seq_idx[0, i], seq_idx[1, i])] = val * global_time_scale
 
-        #travel time (Order -> Order): (u, v) -> t time weighted by sequence prob
+        #travel time (order -> order): (u, v) -> t time weighted by sequence prob
         seq_adj = {}
         for i in range(seq_idx.shape[1]):
             u, v = int(seq_idx[0, i]), int(seq_idx[1, i])
@@ -1104,6 +1106,13 @@ class ScheduleDecoder:
         #STR- activation
         active_ops = set(np.where(p_act >= self.act_threshold)[0])
         
+        if use_extra_ops:
+            inactive_ops = [op for op in range(num_ops) if op not in active_ops]
+            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x])[:n_extra_ops_to_use]
+
+            for best_inactive_op in best_inactive_ops:
+                active_ops.add(best_inactive_op)
+
         if not active_ops:
             k = max(1, int(num_ops * 0.3))
             active_ops = set(np.argsort(p_act)[-k:].tolist())
@@ -1115,17 +1124,17 @@ class ScheduleDecoder:
             avg_proc = np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
             total_processing_time += avg_proc
         
-        #estimate total active capacity
-        total_active_capacity = len(active_ops) * h_fixed_mins
+        # #estimate total active capacity
+        # total_active_capacity = len(active_ops) * h_fixed_mins
         
-        #force activate more operators if mathematically impossible to fit
-        while total_processing_time > total_active_capacity and len(active_ops) < num_ops:
-            #find the best inactive operator and activate them
-            inactive_ops = [op for op in range(num_ops) if op not in active_ops]
-            best_inactive = max(inactive_ops, key=lambda x: p_act[x])
-            active_ops.add(best_inactive)
-            total_active_capacity = len(active_ops) * h_fixed_mins
-            print(f"Warning: Forced activation of Op {best_inactive} due to H_fixed capacity constraints.")
+        # #force activate more operators if mathematically impossible to fit
+        # while total_processing_time > total_active_capacity and len(active_ops) < num_ops:
+        #     #find the best inactive operator and activate them
+        #     inactive_ops = [op for op in range(num_ops) if op not in active_ops]
+        #     best_inactive = max(inactive_ops, key=lambda x: p_act[x])
+        #     active_ops.add(best_inactive)
+        #     total_active_capacity = len(active_ops) * h_fixed_mins
+        #     print(f"Warning: Forced activation of Op {best_inactive} due to H_fixed capacity constraints.")
 
         #preference for the finalized active_ops
         order_preferences = {o: [] for o in range(num_orders)}
@@ -1328,49 +1337,49 @@ class ScheduleDecoder:
             if not rejected_orders:
                 break 
             
-            #send rejected orders back to the pool
+            #set rejected orders to be re-assigned
             orders_to_assign = rejected_orders
 
-        #STR- tail insertion for unassigned orders (orders that were assigned inactive ops who have act_prob < act_threhold)
-        #try to fit rejected orders_to_assign into final_op_routes[op] 
-        if orders_to_assign:
-            print(f"Tail-insertion pass: {len(orders_to_assign)} orders still unassigned")
+            #STR- tail insertion for unassigned orders (orders that were assigned inactive ops who have act_prob < act_threhold)
+            #try to fit rejected orders_to_assign into final_op_routes[op] 
+            if orders_to_assign:
+                print(f"Tail-insertion pass: {len(orders_to_assign)} orders still unassigned")
 
-            for o in list(orders_to_assign):
-                best_op = None
-                best_finish = None
-                
-                for op in active_ops:  # Only try active operators
-                    route = final_op_routes.get(op, [])
-                    curr_finish = route[-1]["finish_time"] if route else 0.0
-                    t_proc = proc_time_map.get((op, o), 0.0)
-                    finish = curr_finish + t_proc
+                for o in list(orders_to_assign):
+                    best_op = None
+                    best_finish = None
+                    
+                    for op in active_ops:  #only try active operators
+                        route = final_op_routes.get(op, [])
+                        curr_finish = route[-1]["finish_time"] if route else 0.0
+                        t_proc = proc_time_map.get((op, o), 0.0)
+                        finish = curr_finish + t_proc
 
-                    if finish <= h_fixed_mins:
-                        if best_finish is None or finish < best_finish:
-                            best_finish = finish
-                            best_op = op
+                        if finish <= h_fixed_mins:
+                            if best_finish is None or finish < best_finish:
+                                best_finish = finish
+                                best_op = op
 
-                if best_op is not None:
-                    route = final_op_routes[best_op]
-                    start_time = route[-1]["finish_time"] if route else 0.0
-                    step = {
-                        "mission_id": all_mission_ids[o],
-                        "_internal": o,
-                        "start_time": round(start_time, 2),
-                        "finish_time": round(start_time + t_proc, 2),
-                        "processing_duration": round(t_proc, 2),
-                        "travel_duration": 0.0,
-                        "successor": None,
-                    }
+                    if best_op is not None:
+                        route = final_op_routes[best_op]
+                        start_time = route[-1]["finish_time"] if route else 0.0
+                        step = {
+                            "mission_id": all_mission_ids[o],
+                            "_internal": o,
+                            "start_time": round(start_time, 2),
+                            "finish_time": round(start_time + t_proc, 2),
+                            "processing_duration": round(t_proc, 2),
+                            "travel_duration": 0.0,
+                            "successor": None,
+                        }
 
-                    if route:
-                        route[-1]["successor"] = all_mission_ids[o]
+                        if route:
+                            route[-1]["successor"] = all_mission_ids[o]
 
-                    route.append(step)
-                    orders_to_assign.remove(o)
+                        route.append(step)
+                        orders_to_assign.remove(o)
 
-                    print(f"Tail-inserted order {o} to Op {best_op}")
+                        print(f"Tail-inserted order {o} to Op {best_op}")
 
 
         #reconstruct schedule with timings
@@ -1397,17 +1406,25 @@ class ScheduleDecoder:
 
         if assigned_count < num_orders:
             print(f"Warning: {num_orders - assigned_count} orders unassigned.")
-            schedule_data["metadata"]["valid"] = False
-
-        h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
-        schedule_data["metadata"]["horizon_valid"] = h_valid
-        schedule_data["metadata"]["horizon_violations"] = h_violations
-
-        os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
-        with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
-            json.dump(schedule_data, f, indent=4)
             
-        print(f"Schedule exported with name: {filename}")
+            n_extra_ops_to_use = n_extra_ops_to_use + 1
+            print(f"Trying to resolve by activating extra [{n_extra_ops_to_use}] operators.")
+
+            self.export_schedule_with_timings_v3(batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
+        else:
+            #check if there's any activated ghost operator
+            if len(active_ops) + n_extra_ops_to_use > np.size(p_act):
+                schedule_data["metadata"]["valid"] = False
+
+            h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
+            schedule_data["metadata"]["horizon_valid"] = h_valid
+            schedule_data["metadata"]["horizon_violations"] = h_violations
+
+            os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
+            with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
+                json.dump(schedule_data, f, indent=4)
+                
+            print(f"Schedule exported with name: {filename}")
 
 
 if __name__ == "__main__":
