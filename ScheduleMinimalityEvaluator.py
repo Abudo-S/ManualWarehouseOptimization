@@ -233,4 +233,134 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
 
-    
+    def evaluate_combined_minimality(self):
+        """
+        Combines makespan and activation optimality gaps using the provided normalized alpha and beta weights per batch,
+        to compute a single combined optimality gap metric for each batch schedule.
+        All optimality gaps are converted to percentages for easier interpretation (e.g. 0.05 becomes 5% gap).
+        """
+
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            batch_mission_path = item['batch_mission_path']
+            batch_travel_path = item['batch_travel_path']
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            mission_batch_features = ['CD_MISSION', 'FROM_X', 'FROM_Y', 'TO_X', 'TO_Y', 'FROM_Z', 'TO_Z', 'TP_UDC', 'DISTANCE']
+            mission_batch_travel_features = ['CD_MISSION_1', 'CD_MISSION_2', 'FROM_X', 'FROM_Y', 'TO_X', 'TO_Y', 'DISTANCE']
+
+            mission_batch_df = pd.read_csv(batch_mission_path)[mission_batch_features]
+            #scale only FROM_Z and TO_Z columns
+            features_to_scale = ['FROM_Z','TO_Z']
+            df_to_scale = mission_batch_df[features_to_scale]
+
+            scaler = StandardScaler()
+            scaled_data = scaler.fit_transform(df_to_scale)
+
+            df_scaled_features = pd.DataFrame(
+                scaled_data,
+                columns=features_to_scale,
+                index=mission_batch_df.index
+            )
+
+            df_scaled_features = df_scaled_features.clip(lower=0)
+            #df_scaled_features.head()
+
+            df_unscaled_features = mission_batch_df.drop(columns=features_to_scale)
+
+            mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
+            mission_batch_travel_df = pd.read_csv(batch_travel_path)[mission_batch_travel_features]
+
+            parameter_data_loader = ParameterDataLoader(
+                mission_batch_df_scaled,
+                mission_batch_df_scaled.copy(),
+                mission_batch_travel_df,
+                self.fork_lifts_df,
+                self.udc_types_df,
+                BIG_M
+            )
+
+            travel_times=parameter_data_loader.get_mission_travel_times()
+            processing_times=parameter_data_loader.get_mission_processing_times()
+
+            mission_travel_times = defaultdict(list)
+            mission_processing_times = defaultdict(list)
+
+            #(cd_mission, cd_mission): travel_time
+            {mission_travel_times[k[0]].append(travel_time) for k, travel_time in travel_times.items()}
+            total_travel_mins = [min(p_time) for mission, p_time in mission_travel_times.items()]
+
+            #(oid_fork_lift, cd_mission): processing_time
+            {mission_processing_times[k[1]].append(processing_time) for k, processing_time in processing_times.items()}
+            total_processing_mins =[min(p_time) for mission, p_time in mission_processing_times.items()]
+
+            min_makespan = sum(total_travel_mins) + sum(total_processing_mins)
+            t_pruned = (min_makespan/h_fixed) * min(total_travel_mins)
+            min_makespan = min_makespan - t_pruned
+            min_activation = math.ceil(min_makespan/h_fixed)
+        
+            pred_makespan = 0.0
+            for op in pred["operators"]:
+                for route in op["routes"]:     
+                    if route:          
+                        route.sort(key=lambda x: x["finish_time"])
+                        pred_makespan += route[-1]["finish_time"] 
+
+            pred_activation = len(pred["operators"]) #number of operators used in the predicted schedule
+
+            makespan_min_gap = (pred_makespan - min_makespan) / min_makespan if min_makespan > 0 else float('inf')
+            activation_min_gap = (pred_activation - min_activation) / min_activation if min_activation > 0 else float('inf')
+
+            #normalize alpha, beta to sum to 1 for weighting
+            alpha = alpha / (alpha + beta)
+            beta = beta / (alpha + beta)
+
+            combined_pred_score = alpha * pred_makespan + beta * pred_activation
+            combined_min_score = alpha * min_makespan + beta * min_activation
+            combined_min_gap = abs(alpha * makespan_min_gap + beta * activation_min_gap)
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_makespan': pred_makespan,
+                'min_makespan': min_makespan,
+                'pred_activations': pred_activation,
+                'min_activations': min_activation,
+                'combined_pred_score': combined_pred_score,
+                'combined_min_score': combined_min_score,
+                'makespan_min_gap': round(makespan_min_gap, 4) * 100, #convert to percentage
+                'activation_min_gap': round(activation_min_gap, 4) * 100, #convert to percentage
+                'combined_min_gap': round(combined_min_gap, 4) * 100 #convert to percentage
+            })
+            
+        return overall_results
+
+if __name__ == "__main__":
+    evaluator = ScheduleOptimalityEvaluator()
+    makespan_results = evaluator.evaluate_makespan_minimality()
+    activation_results = evaluator.evaluate_activation_minimality(makespan_results)
+    combined_results = evaluator.evaluate_combined_minimality()
+
+    #convert results to DataFrames for better visualization
+    df_makespan = pd.DataFrame(makespan_results)
+    df_activation = pd.DataFrame(activation_results)
+    df_combined = pd.DataFrame(combined_results)
+
+    print("Makespan Minimality Results:")
+    print(df_makespan)
+
+    print("\nActivation Minimality Results:")
+    print(df_activation)
+
+    print("\nCombined Minitmality Results:")
+    print(df_combined)
