@@ -58,8 +58,13 @@ class GnnDataInstanceBuilder:
         edge_file_path, 
         schedule_file_path
     ):
+
+        assign_labels = False
+        if schedule_file_path:
+            assign_labels = True
+
         #parse global parameters
-        filename = os.path.basename(schedule_file_path)
+        filename = os.path.basename(schedule_file_path if schedule_file_path else node_file_path) #node_file_path for large-scale batches with no labels
         alpha, beta, h_fixed = self.parse_filename_params(filename)
         #print(f"Global params extracted from[{filename}]: Alpha={alpha}, Beta={beta}, H_fixed={h_fixed}")
 
@@ -68,13 +73,15 @@ class GnnDataInstanceBuilder:
         df_pallet_types = pd.read_csv(pallet_types_file_path)
         df_ops = pd.read_csv(operator_file_path)
         df_edges = pd.read_csv(edge_file_path)
-        df_schedule = pd.read_csv(schedule_file_path)
+
+        if assign_labels:
+            df_schedule = pd.read_csv(schedule_file_path)
 
         #concatenate pallet type features in mission features
         df_missions = df_missions.merge(df_pallet_types[['TP_UDC', 'WIDTH', 'LENGTH']], on='TP_UDC', how='left')
         
         #node idx mappings
-        mission_ids = df_missions['CD_MISSION'].str.replace(",", "", regex=False).astype(int).unique()
+        mission_ids = df_missions['CD_MISSION'].astype(str).str.replace(",", "", regex=False).astype(int).unique()
         order_map = {id: i for i, id in enumerate(mission_ids)}
         num_mission = len(mission_ids)
         
@@ -156,7 +163,7 @@ class GnnDataInstanceBuilder:
         df_unscaled_features = df_missions.drop(columns=features_to_scale)
 
         mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
-        mission_batch_df_scaled['CD_MISSION'] = df_missions['CD_MISSION'].str.replace(',', '', regex=False).astype(int)
+        mission_batch_df_scaled['CD_MISSION'] = df_missions['CD_MISSION'].astype(str).str.replace(',', '', regex=False).astype(int)
         
         ops_scaled = scaler.fit_transform(op_feats_raw)
         x_ops = torch.tensor(ops_scaled, dtype=torch.float)
@@ -275,71 +282,73 @@ class GnnDataInstanceBuilder:
         data['order', 'rev_assign', 'operator'].edge_attr = rev_edge_attr
         
 
-        #-STR-ground truth labelling (based on MIP mini-batch schedule)
-        
-        #activation Labels
-        active_op_indices = set()
-        #verify operators that actually exist in Op files
-        valid_ops_in_schedule = [o for o in df_schedule['Operator'].unique() if o in op_map]
-        
-        for op_id in valid_ops_in_schedule:
-            active_op_indices.add(op_map[op_id])
-                
-        y_activation = torch.zeros(num_ops, dtype=torch.float)
-        y_activation[list(active_op_indices)] = 1.0
-        data['operator'].y = y_activation
+        #-STR- conditional ground truth labelling (based on MIP mini-batch schedule)
+        #for large-scale batches we don't have labels
+        if assign_labels:
 
-        #assignment & sequence labels
-        num_op_edges = data['operator', 'assign', 'order'].edge_index.shape[1]
-        num_ord_edges = data['order', 'to', 'order'].edge_index.shape[1]
-        
-        y_assign = torch.zeros(num_op_edges, dtype=torch.float)
-        y_seq = torch.zeros(num_ord_edges, dtype=torch.float)
-        
-        #lookup maps for edge indices
-        op_edge_lookup = {
-            (s.item(), d.item()): i 
-            for i, (s, d) in enumerate(zip(*data['operator', 'assign', 'order'].edge_index))
-        }
-        ord_edge_lookup = {
-            (s.item(), d.item()): i 
-            for i, (s, d) in enumerate(zip(*data['order', 'to', 'order'].edge_index))
-        }
-
-        for op_id, group in df_schedule.groupby('Operator'):
-            if op_id not in op_map: continue
-            op_idx = op_map[op_id]
+            #activation Labels
+            active_op_indices = set()
+            #verify operators that actually exist in Op files
+            valid_ops_in_schedule = [o for o in df_schedule['Operator'].unique() if o in op_map]
             
-            #sort missions by start time
-            missions = group.sort_values('Start')
+            for op_id in valid_ops_in_schedule:
+                active_op_indices.add(op_map[op_id])
+                    
+            y_activation = torch.zeros(num_ops, dtype=torch.float)
+            y_activation[list(active_op_indices)] = 1.0
+            data['operator'].y = y_activation
+
+            #assignment & sequence labels
+            num_op_edges = data['operator', 'assign', 'order'].edge_index.shape[1]
+            num_ord_edges = data['order', 'to', 'order'].edge_index.shape[1]
             
-            #first mission assignment (op -assign-> first order)
-            if not missions.empty:
-                first_mission = missions.iloc[0]['Task']
-                if first_mission in order_map:
-                    f_idx = order_map[first_mission]
-                    if (op_idx, f_idx) in op_edge_lookup:
-                        y_assign[op_edge_lookup[(op_idx, f_idx)]] = 1.0
+            y_assign = torch.zeros(num_op_edges, dtype=torch.float)
+            y_seq = torch.zeros(num_ord_edges, dtype=torch.float)
+            
+            #lookup maps for edge indices
+            op_edge_lookup = {
+                (s.item(), d.item()): i 
+                for i, (s, d) in enumerate(zip(*data['operator', 'assign', 'order'].edge_index))
+            }
+            ord_edge_lookup = {
+                (s.item(), d.item()): i 
+                for i, (s, d) in enumerate(zip(*data['order', 'to', 'order'].edge_index))
+            }
 
-            #sequence (order -to-> succ_order)
-            for _, row in group.iterrows():
-                curr = row['Task']
-                succ = row['Successor']
+            for op_id, group in df_schedule.groupby('Operator'):
+                if op_id not in op_map: continue
+                op_idx = op_map[op_id]
                 
-                #ignore '0' that denotes end of route (return to base)
-                if curr in order_map and succ != 0 and succ in order_map:
-                    u, v = order_map[curr], order_map[succ]
-                    if (u, v) in ord_edge_lookup:
-                        y_seq[ord_edge_lookup[(u, v)]] = 1.0
+                #sort missions by start time
+                missions = group.sort_values('Start')
+                
+                #first mission assignment (op -assign-> first order)
+                if not missions.empty:
+                    first_mission = missions.iloc[0]['Task']
+                    if first_mission in order_map:
+                        f_idx = order_map[first_mission]
+                        if (op_idx, f_idx) in op_edge_lookup:
+                            y_assign[op_edge_lookup[(op_idx, f_idx)]] = 1.0
 
-        data['operator', 'assign', 'order'].y = y_assign
-        data['order', 'to', 'order'].y = y_seq
-        
+                #sequence (order -to-> succ_order)
+                for _, row in group.iterrows():
+                    curr = row['Task']
+                    succ = row['Successor']
+                    
+                    #ignore '0' that denotes end of route (return to base)
+                    if curr in order_map and succ != 0 and succ in order_map:
+                        u, v = order_map[curr], order_map[succ]
+                        if (u, v) in ord_edge_lookup:
+                            y_seq[ord_edge_lookup[(u, v)]] = 1.0
+
+            data['operator', 'assign', 'order'].y = y_assign
+            data['order', 'to', 'order'].y = y_seq
+
+            #print("Reverse edges created:", len(data['order', 'rev_assign', 'operator'].edge_index[0]))
+
         #store schedule_id for reference (can be used for comparison/linking back to original data)
         data.schedule_id = filename.replace('.csv', '') 
-
-        #print("Reverse edges created:", len(data['order', 'rev_assign', 'operator'].edge_index[0]))
-
+            
         return data
 
 #try to build just one HetroData from a mini-batch
