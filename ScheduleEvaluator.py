@@ -26,7 +26,8 @@ class ScheduleEvaluator:
                  batch_size,
                  act_threshold=CLASSIFICATION_THRESHOLD,
                  assign_threshold=CLASSIFICATION_THRESHOLD,
-                 seq_threshold=CLASSIFICATION_THRESHOLD):
+                 seq_threshold=CLASSIFICATION_THRESHOLD,
+                 split_train_validation=True):
         """
         Initializes the ScheduleEvaluator with the model, dataset, and evaluation parameters.
         Args:
@@ -36,6 +37,8 @@ class ScheduleEvaluator:
             act_threshold (float): Threshold for activation head.
             assign_threshold (float): Threshold for assignment head.
             seq_threshold (float): Threshold for sequence head.
+
+        If split_train_validation is False, all data examples are saved into schedule_val_dataset. (Note that large scale batches aren't labelled)
         """
 
         self.model = model
@@ -52,7 +55,11 @@ class ScheduleEvaluator:
         self.schedule_val_dataset = None
 
         print(f"Using device: {self.device}")
-        self._split_datasets()
+
+        if split_train_validation:
+            self._split_datasets()
+        else:
+            self.schedule_val_dataset = schedule_dataset
 
     def _split_datasets(self):
         '''
@@ -71,7 +78,6 @@ class ScheduleEvaluator:
                 [training_size, val_size], 
                 generator=gen
             )
-
 
             print(f"First element of the schedule training set: {train_set[0]}")
             print(f"First element of the schedule validation set: {val_set[0]}")
