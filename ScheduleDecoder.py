@@ -13,15 +13,19 @@ from GnnScheduleDataset import GnnScheduleDataset
 
 LARGE_SCALE_BATCH_NAME = "Batch10000M" #Batch1000M, Batch9000M or Batch10000M
 TARGET_MINI_BATCH_SIZE = 10 #number of missions per mini-batch
+LARGE_BATCH_DIR = "./datasets/large-batch/batch/"
+MISSION_LARGE_BATCH_DIR = "./datasets/large-batch/batch/Batch_1_100M_distanced_A1.0_B1000.0_H90.csv"
 LARGE_SCALE_MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}.csv"
 PREPROCESSED_BATCH_DIR = f"./preprocessed/{LARGE_SCALE_BATCH_NAME}/Batch{TARGET_MINI_BATCH_SIZE}M_idx.xlsx" #idx to be replaced cluster idx
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
 MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
+MISSION_LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/Batch_1_100M_travel_distanced.csv"
 FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 PREDICTED_SCHEDULE_DIR = f"./predicted_schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
+PREDICTED_LARGE_SCHEDULE_DIR = f"./predicted_schedules/large-scale/batch/"
 BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch instances
 H_FIXED_EXCEED_TOLERANCE_MIN = 0.0 #allow schedules to tolerate H_fixed exceedance 
 MAX_ITERATIONS_PER_ORDER = 10 #max attempts to find a feasible operator for an order based on assignment probs (in iterative repair)
@@ -34,7 +38,8 @@ class ScheduleDecoder:
     def __init__(self, 
                  act_threshold=CLASSIFICATION_THRESHOLD, 
                  assign_threshold=CLASSIFICATION_THRESHOLD, 
-                 seq_threshold=CLASSIFICATION_THRESHOLD):
+                 seq_threshold=CLASSIFICATION_THRESHOLD,
+                 predicted_schedule_dir=PREDICTED_SCHEDULE_DIR):
         """
         Initializes the ScheduleValidator with the given batch of data.
         Args:
@@ -46,6 +51,7 @@ class ScheduleDecoder:
         self.act_threshold = act_threshold
         self.assign_threshold = assign_threshold
         self.seq_threshold = seq_threshold
+        self.predicted_schedule_dir = predicted_schedule_dir
     
     @torch.no_grad()
     def decode_assignment_one_per_order(self, batch, p_assign):
@@ -472,10 +478,10 @@ class ScheduleDecoder:
             })
             
         #ensure output directory exists
-        os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
+        os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
 
         #save schedule
-        with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
+        with open(os.path.join(self.predicted_schedule_dir, filename), 'w') as f:
             json.dump(schedule_data, f, indent=4)
         
         print(f"Schedule exported with name: {filename}")
@@ -706,10 +712,10 @@ class ScheduleDecoder:
             print(f"Warning: {len(h_violations)} routes exceed time horizon (H={batch.u[0,2].item()})")
 
         #ensure output directory exists
-        os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
+        os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
         
         #save schedule
-        with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
+        with open(os.path.join(self.predicted_schedule_dir, filename), 'w') as f:
             json.dump(schedule_data, f, indent=4)
         
         print(f"Schedule exported with name: {filename}")
@@ -1030,10 +1036,10 @@ class ScheduleDecoder:
         schedule_data["metadata"]["horizon_violations"] = h_violations
         
         #ensure output directory exists
-        os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
+        os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
         
         #save schedule
-        with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
+        with open(os.path.join(self.predicted_schedule_dir, filename), 'w') as f:
             json.dump(schedule_data, f, indent=4)
         
         print(f"Schedule exported with name: {filename}")
@@ -1404,14 +1410,19 @@ class ScheduleDecoder:
                 })
                 assigned_count += len(clean_route)
 
-        if assigned_count < num_orders:
+        activate_extra_op=False
+        if assigned_count < num_orders and len(active_ops):
             print(f"Warning: {num_orders - assigned_count} orders unassigned.")
-            
+            activate_extra_op=True
+
+        if activate_extra_op and len(active_ops) + n_extra_ops_to_use < np.size(p_act):
             n_extra_ops_to_use = n_extra_ops_to_use + 1
             print(f"Trying to resolve by activating extra [{n_extra_ops_to_use}] operators.")
 
             self.export_schedule_with_timings_v3(batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
         else:
+            schedule_data["metadata"]["unassigned_orders"] = num_orders - assigned_count
+
             #check if there's any activated ghost operator
             if len(active_ops) + n_extra_ops_to_use > np.size(p_act):
                 schedule_data["metadata"]["valid"] = False
@@ -1420,22 +1431,35 @@ class ScheduleDecoder:
             schedule_data["metadata"]["horizon_valid"] = h_valid
             schedule_data["metadata"]["horizon_violations"] = h_violations
 
-            os.makedirs(os.path.dirname(PREDICTED_SCHEDULE_DIR), exist_ok=True)
-            with open(os.path.join(PREDICTED_SCHEDULE_DIR, filename), 'w') as f:
+            os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
+            with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
                 json.dump(schedule_data, f, indent=4)
                 
             print(f"Schedule exported with name: {filename}")
 
 
 if __name__ == "__main__":
-    #init dataset
-    dataset = GnnScheduleDataset(
-        schedule_dir=SCHEDULE_DIR,
-        mission_base_path=MISSION_BATCH_DIR,
-        edge_base_path=MISSION_BATCH_TRAVEL_DIR,
-        pallet_types_file_path=UDC_TYPES_DIR,
-        fork_path=FORK_LIFTS_DIR
-    )
+    use_large_scale = True
+
+    if use_large_scale:
+        #init large-scale dataset
+        dataset = GnnScheduleDataset(
+            schedule_dir=None,
+            mission_base_path=MISSION_LARGE_BATCH_DIR,
+            edge_base_path=MISSION_LARGE_BATCH_TRAVEL_DIR,
+            pallet_types_file_path=UDC_TYPES_DIR,
+            fork_path=FORK_LIFTS_DIR,
+            large_batch_dir=LARGE_BATCH_DIR
+        )
+    else:
+        #init dataset
+        dataset = GnnScheduleDataset(
+            schedule_dir=SCHEDULE_DIR,
+            mission_base_path=MISSION_BATCH_DIR,
+            edge_base_path=MISSION_BATCH_TRAVEL_DIR,
+            pallet_types_file_path=UDC_TYPES_DIR,
+            fork_path=FORK_LIFTS_DIR
+        )
 
     sample_data = dataset[0]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -1513,7 +1537,8 @@ if __name__ == "__main__":
                                         batch_size=BATCH_SIZE,
                                         act_threshold=best_thresholds['activation'],
                                         assign_threshold=best_thresholds['assignment'],
-                                        seq_threshold=best_thresholds['sequence']
+                                        seq_threshold=best_thresholds['sequence'],
+                                        split_train_validation=not use_large_scale
                                         )
     
     loader = DataLoader(schedule_evaluator.schedule_val_dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -1521,7 +1546,8 @@ if __name__ == "__main__":
     scheduleValidator = ScheduleDecoder(
         act_threshold=best_thresholds['activation'],
         assign_threshold=best_thresholds['assignment'],
-        seq_threshold=best_thresholds['sequence']
+        seq_threshold=best_thresholds['sequence'],
+        predicted_schedule_dir=PREDICTED_LARGE_SCHEDULE_DIR
     )
     
     print("Starting Schedule Validation - total batches:", len(loader))
