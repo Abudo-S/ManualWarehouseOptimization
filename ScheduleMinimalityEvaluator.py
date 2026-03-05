@@ -196,3 +196,41 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
     
+    def evaluate_activation_minimality(self, makespan_results):
+        """
+        Evaluates the minimality of each batch predicted schedules in terms of number of activations (operators used), compared to the minimal values.
+        Minimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
+        """
+
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            min_makespan = [makespan_result['min_makespan'] for makespan_result in makespan_results if makespan_result['batch_num'] == batch_num][0]
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            pred_activation = len(pred["operators"])  #number of operators used in the predicted schedule
+    
+            min_activation = math.ceil(min_makespan/h_fixed)
+
+            minimality_gap = (pred_activation - min_activation) / min_activation if min_activation > 0 else float('inf')
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_activation': pred_activation,
+                'min_activation': min_activation,
+                'minimality_gap': round(minimality_gap, 4) * 100 #convert to percentage
+            })
+            
+        return overall_results
+
+    
