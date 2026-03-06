@@ -34,6 +34,9 @@ MAX_ITERATIONS_PER_ORDER = 10 #max attempts to find a feasible operator for an o
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
 CLASSIFICATION_THRESHOLD = 0.05
 
+def colored_background_str(r, g, b, text):
+    return f'\033[48;2;{r};{g};{b}m{text}\033[0m'
+
 class ScheduleDecoder:
     def __init__(self, 
                  act_threshold=CLASSIFICATION_THRESHOLD, 
@@ -1421,7 +1424,11 @@ class ScheduleDecoder:
 
             self.export_schedule_with_timings_v3(batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
         else:
-            schedule_data["metadata"]["unassigned_orders"] = num_orders - assigned_count
+            unassigned_orders = num_orders - assigned_count
+            schedule_data["metadata"]["unassigned_orders"] = unassigned_orders
+
+            if unassigned_orders > 0:
+                print(colored_background_str(r=255, g=0, b=5, text=f"Warning: {unassigned_orders} orders remain unassigned."))
 
             #check if there's any activated ghost operator
             if len(active_ops) + n_extra_ops_to_use > np.size(p_act):
