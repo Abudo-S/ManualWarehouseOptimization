@@ -83,18 +83,14 @@ class ScheduleOptimalityEvaluator:
                     'predicted_schedule_path': pred_sched_path,
                     'batch_mission_path': batch_mission_path,
                     'batch_travel_path': batch_travel_path,
+                    'fork_lifts_path': fork_lifts_dir,
+                    'udc_types_path': udc_types_dir,
                     'alpha': alpha,
                     'beta': beta,
                     'h_fixed': h_fixed
                 })
             else:
                 print(f"Missing mission or travel file for batch {batch_num}")
-
-            forklift_features = ['OID', 'FORK_WIDTH', 'FORK_LENGTH', 'SPEED', 'SPEED_WITH_LOAD', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']
-            udc_types_features = ['TP_UDC', 'WIDTH', 'LENGTH']
-
-            self.fork_lifts_df = pd.read_csv(fork_lifts_dir)[forklift_features]
-            self.udc_types_df = pd.read_csv(udc_types_dir)[udc_types_features]
     
     def evaluate_makespan_minimality(self):
         """
@@ -111,6 +107,8 @@ class ScheduleOptimalityEvaluator:
             pred_path = item['predicted_schedule_path']
             batch_mission_path = item['batch_mission_path']
             batch_travel_path = item['batch_travel_path']
+            fork_lifts_path = item['fork_lifts_path']
+            udc_types_path = item['udc_types_path']
             alpha = item['alpha']
             beta = item['beta']
             h_fixed = item['h_fixed']
@@ -120,6 +118,11 @@ class ScheduleOptimalityEvaluator:
 
             mission_batch_features = ['CD_MISSION', 'FROM_X', 'FROM_Y', 'TO_X', 'TO_Y', 'FROM_Z', 'TO_Z', 'TP_UDC', 'DISTANCE']
             mission_batch_travel_features = ['CD_MISSION_1', 'CD_MISSION_2', 'FROM_X', 'FROM_Y', 'TO_X', 'TO_Y', 'DISTANCE']
+            forklift_features = ['OID', 'FORK_WIDTH', 'FORK_LENGTH', 'SPEED', 'SPEED_WITH_LOAD', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']
+            udc_types_features = ['TP_UDC', 'WIDTH', 'LENGTH']
+
+            fork_lifts_df = pd.read_csv(fork_lifts_path)[forklift_features]
+            udc_types_df = pd.read_csv(udc_types_path)[udc_types_features]
 
             mission_batch_df = pd.read_csv(batch_mission_path)[mission_batch_features]
             #scale only FROM_Z and TO_Z columns
@@ -147,8 +150,8 @@ class ScheduleOptimalityEvaluator:
                 mission_batch_df_scaled,
                 mission_batch_df_scaled.copy(),
                 mission_batch_travel_df,
-                self.fork_lifts_df,
-                self.udc_types_df,
+                fork_lifts_df,
+                udc_types_df,
                 BIG_M
             )
 
@@ -247,6 +250,8 @@ class ScheduleOptimalityEvaluator:
             pred_path = item['predicted_schedule_path']
             batch_mission_path = item['batch_mission_path']
             batch_travel_path = item['batch_travel_path']
+            fork_lifts_path = item['fork_lifts_path']
+            udc_types_path = item['udc_types_path']
             alpha = item['alpha']
             beta = item['beta']
             h_fixed = item['h_fixed']
@@ -256,6 +261,11 @@ class ScheduleOptimalityEvaluator:
 
             mission_batch_features = ['CD_MISSION', 'FROM_X', 'FROM_Y', 'TO_X', 'TO_Y', 'FROM_Z', 'TO_Z', 'TP_UDC', 'DISTANCE']
             mission_batch_travel_features = ['CD_MISSION_1', 'CD_MISSION_2', 'FROM_X', 'FROM_Y', 'TO_X', 'TO_Y', 'DISTANCE']
+            forklift_features = ['OID', 'FORK_WIDTH', 'FORK_LENGTH', 'SPEED', 'SPEED_WITH_LOAD', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD']
+            udc_types_features = ['TP_UDC', 'WIDTH', 'LENGTH']
+
+            fork_lifts_df = pd.read_csv(fork_lifts_path)[forklift_features]
+            udc_types_df = pd.read_csv(udc_types_path)[udc_types_features]
 
             mission_batch_df = pd.read_csv(batch_mission_path)[mission_batch_features]
             #scale only FROM_Z and TO_Z columns
@@ -283,8 +293,8 @@ class ScheduleOptimalityEvaluator:
                 mission_batch_df_scaled,
                 mission_batch_df_scaled.copy(),
                 mission_batch_travel_df,
-                self.fork_lifts_df,
-                self.udc_types_df,
+                fork_lifts_df,
+                udc_types_df,
                 BIG_M
             )
 
@@ -362,5 +372,5 @@ if __name__ == "__main__":
     print("\nActivation Minimality Results:")
     print(df_activation)
 
-    print("\nCombined Minitmality Results:")
+    print("\nCombined Minimality Results:")
     print(df_combined)
