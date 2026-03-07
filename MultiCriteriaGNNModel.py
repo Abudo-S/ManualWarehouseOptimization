@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn.functional as F
 from torch.nn import Linear, Sequential, ReLU, BatchNorm1d
@@ -87,8 +88,14 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                 )
             }
             
-            #HeteroConv wraps these standard GAT layers
-            self.convs.append(HeteroConv(conv_dict, aggr='sum'))
+            #HeteroConv wraps these standard GAT layers using aggregation function
+            #using aggr='sum'. If an operator is connected to 10 missions, its feature values scale by ~10. 
+            #If it is connected to 800 missions, its values scale by ~800. 
+            #Across 3 GNN layers, this compounds exponentially ($800^3 = 5.12 \times 10^8$). 
+            #Multiplying these massive numbers by network weights results in numeric overflow (inf -> NaN).
+            #using aggr='mean': The node embeddings will mathematically stay in the [-1.0, 1.0] range,
+            #regardless of whether an operator processes 5 orders or 800 orders.
+            self.convs.append(HeteroConv(conv_dict, aggr='mean'))
 
         #decision heads (decoders)
         
@@ -163,7 +170,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             x_dict = conv(x_dict, edge_index_dict, edge_attr_dict)
             
             #activation & residual could be added here
-            x_dict = {key: x.relu() for key, x in x_dict.items()}
+            #x_dict = {key: x.relu() for key, x in x_dict.items()}
+            x_dict = {key: torch.clamp(x, min=-1e4, max=1e4).relu() for key, x in x_dict.items()} #prevent exploding activations before ReLU
+            x_dict = {key: torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4) for key, x in x_dict.items()} #prevent NaNs
 
         #mix original + message-passed embeddings
         #preserve identity while adding context
@@ -214,6 +223,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         total_workload_per_batch = torch.zeros(num_graphs, dtype=proc_times.dtype, device=x_dict['order'].device)
         total_workload_per_batch.index_add_(0, order_batch, avg_proc_per_order)
 
+        #count operators per graph
+        op_batch = batch_dict['operator']
+        ops_per_batch = torch.zeros(num_graphs, dtype=torch.float, device=x_dict['operator'].device)
+        ops_per_batch = ops_per_batch.index_add(0, op_batch, torch.ones_like(op_batch, dtype=torch.float))
+
         #calculate min ops needed (total_workload / h_fixed)
         #u[:, 2] is h_fixed (normalized)
         h_fixed_norm = u[:, 2] 
@@ -223,8 +237,12 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #add a simple heuristic factor for travel time
         min_ops_needed = min_ops_needed * self.heuristic_boost_factor
 
+        #normalize into a ratio
+        load_ratio_per_batch = min_ops_needed / ops_per_batch.clamp(min=1.0)
+
         #broadcast back to operators
-        op_demand_feature = min_ops_needed[batch_dict['operator']]
+        #op_demand_feature = min_ops_needed[batch_dict['operator']] 
+        op_demand_feature = load_ratio_per_batch[batch_dict['operator']] #normalized
 
         #concat: [op_emb, global, op_demand]
         #we'll need the raw logits or probabilities to feed to the next head
