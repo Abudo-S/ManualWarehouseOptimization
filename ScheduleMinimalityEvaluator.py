@@ -11,6 +11,7 @@ from ParameterDataLoader import ParameterDataLoader
 LARGE_SCALE_BATCH_NAME = "Batch10000M" #Batch1000M, Batch9000M or Batch10000M
 TARGET_MINI_BATCH_SIZE = 10 #number of missions per mini-batch
 LARGE_BATCH_DIR = "./datasets/large-batch/batch/"
+LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/"
 MISSION_LARGE_BATCH_DIR = "./datasets/large-batch/batch/Batch_1_100M_distanced_A1.0_B1000.0_H90.csv"
 MISSION_LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/Batch_1_100M_travel_distanced.csv"
 LARGE_SCALE_MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}.csv"
@@ -18,7 +19,7 @@ PREPROCESSED_BATCH_DIR = f"./preprocessed/{LARGE_SCALE_BATCH_NAME}/Batch{TARGET_
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
 MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
-FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
+FORK_LIFTS_DIR = "./datasets/ForkLifts.csv"
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 PREDICTED_SCHEDULE_DIR = f"./predicted_schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
@@ -27,7 +28,7 @@ BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch ins
 H_FIXED_EXCEED_TOLERANCE_MIN = 0.0 #allow schedules to tolerate H_fixed exceedance 
 BIG_M = 1e5
 
-class ScheduleOptimalityEvaluator:
+class ScheduleMinimalityEvaluator:
     def parse_filename_params(self, filename):
         """
         Extracts Global Parameters A (alpha), B (beta), H (H_fixed) from  schedule_file filename.
@@ -46,10 +47,11 @@ class ScheduleOptimalityEvaluator:
     
     def __init__(self, 
                  mission_batch_dir=LARGE_BATCH_DIR,
-                 mission_batch_travel_dir=MISSION_LARGE_BATCH_TRAVEL_DIR,
+                 mission_batch_travel_dir=LARGE_BATCH_TRAVEL_DIR,
                  fork_lifts_dir=FORK_LIFTS_DIR, 
                  udc_types_dir=UDC_TYPES_DIR, 
-                 predicted_schedule_dir=PREDICTED_LARGE_SCHEDULE_DIR):
+                 predicted_schedule_dir=PREDICTED_LARGE_SCHEDULE_DIR,
+                 is_mini_batch=False):
         
         self.mission_batch_dir = mission_batch_dir
         self.mission_batch_travel_dir = mission_batch_travel_dir
@@ -74,8 +76,15 @@ class ScheduleOptimalityEvaluator:
             if match:
                 batch_num = match.group(1)
 
-            batch_mission_path = os.path.join(mission_batch_dir, filename.replace('predicted_schedule', 'Batch'))
-            batch_travel_path = mission_batch_travel_dir.replace('Batch_1', f'Batch_{batch_num}')
+            filename = filename.replace('predicted_schedule', 'Batch')
+
+            if is_mini_batch:
+                filename = filename.split('_A')[0].replace('_', '_distanced_')
+                batch_mission_path = os.path.join(mission_batch_dir,  filename + '.csv')
+            else:
+                batch_mission_path = os.path.join(mission_batch_dir, filename)
+                
+            batch_travel_path = os.path.join(mission_batch_travel_dir, filename.split('_A')[0].replace('distanced', 'travel_distanced') + '.csv')
 
             if os.path.exists(batch_mission_path) and os.path.exists(batch_travel_path):
                 self.items.append({
@@ -144,6 +153,7 @@ class ScheduleOptimalityEvaluator:
             df_unscaled_features = mission_batch_df.drop(columns=features_to_scale)
 
             mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
+            mission_batch_df_scaled['CD_MISSION'] = mission_batch_df_scaled['CD_MISSION'].astype(str).str.replace(',', '', regex=False).astype(int)
             mission_batch_travel_df = pd.read_csv(batch_travel_path)[mission_batch_travel_features]
 
             parameter_data_loader = ParameterDataLoader(
@@ -287,6 +297,7 @@ class ScheduleOptimalityEvaluator:
             df_unscaled_features = mission_batch_df.drop(columns=features_to_scale)
 
             mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
+            mission_batch_df_scaled['CD_MISSION'] = mission_batch_df_scaled['CD_MISSION'].astype(str).str.replace(',', '', regex=False).astype(int)
             mission_batch_travel_df = pd.read_csv(batch_travel_path)[mission_batch_travel_features]
 
             parameter_data_loader = ParameterDataLoader(
@@ -306,7 +317,7 @@ class ScheduleOptimalityEvaluator:
 
             #(cd_mission, cd_mission): travel_time
             {mission_travel_times[k[0]].append(travel_time) for k, travel_time in travel_times.items()}
-            total_travel_mins = [min(p_time) for mission, p_time in mission_travel_times.items()]
+            total_travel_mins = [min(t_time) for mission, t_time in mission_travel_times.items()]
 
             #(oid_fork_lift, cd_mission): processing_time
             {mission_processing_times[k[1]].append(processing_time) for k, processing_time in processing_times.items()}
@@ -337,6 +348,11 @@ class ScheduleOptimalityEvaluator:
             combined_min_score = alpha * min_makespan + beta * min_activation
             combined_min_gap = abs(alpha * makespan_min_gap + beta * activation_min_gap)
 
+            # #number of missions in the original batch
+            # num_missions = len(mission_batch_df)
+            # #number of missions in the predicted schedule
+            # num_pred_missions = sum([len(op["routes"][0]) for op in pred["operators"]])
+
             overall_results.append({
                 'batch_num': batch_num,
                 'alpha': alpha,
@@ -356,7 +372,14 @@ class ScheduleOptimalityEvaluator:
         return overall_results
 
 if __name__ == "__main__":
-    evaluator = ScheduleOptimalityEvaluator()
+    #mini-batch
+    # evaluator = ScheduleMinimalityEvaluator(mission_batch_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/batch",
+    #                                         mission_batch_travel_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/travel",
+    #                                         predicted_schedule_dir=PREDICTED_SCHEDULE_DIR, 
+    #                                         is_mini_batch=True)
+    
+    evaluator = ScheduleMinimalityEvaluator()
+    
     makespan_results = evaluator.evaluate_makespan_minimality()
     activation_results = evaluator.evaluate_activation_minimality(makespan_results)
     combined_results = evaluator.evaluate_combined_minimality()
