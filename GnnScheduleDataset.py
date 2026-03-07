@@ -11,6 +11,7 @@ from MultiCriteriaGNNModel import MultiCriteriaGNNModel
 LARGE_SCALE_BATCH_NAME = "Batch1000M" #Batch1000M, Batch9000M or Batch10000M
 #file paths
 LARGE_BATCH_DIR = "./datasets/large-batch/batch/"
+LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/"
 MISSION_LARGE_BATCH_DIR = "./datasets/large-batch/batch/Batch_1_100M_distanced_A1.0_B1000.0_H90.csv"
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
@@ -31,7 +32,8 @@ class GnnScheduleDataset(Dataset):
                 edge_base_path, 
                 pallet_types_file_path, 
                 fork_path,
-                large_batch_dir=None):
+                large_batch_dir=None,
+                large_batch_travel_dir=None):
         
         self.schedule_dir = schedule_dir
         self.large_batch_dir = large_batch_dir
@@ -89,7 +91,7 @@ class GnnScheduleDataset(Dataset):
                     
                     #add corresponding paths
                     node_path = os.path.join(large_batch_dir, filename)
-                    edge_path = edge_base_path.replace('Batch_1', f'Batch_{batch_num}')
+                    edge_path = os.path.join(large_batch_travel_dir, filename.split('_A')[0].replace('distanced', 'travel_distanced.csv'))
                     
                     if os.path.exists(node_path) and os.path.exists(edge_path):
                         self.items.append({
@@ -137,7 +139,8 @@ if __name__ == "__main__":
         edge_base_path=MISSION_LARGE_BATCH_TRAVEL_DIR,
         pallet_types_file_path=UDC_TYPES_DIR,
         fork_path=FORK_LIFTS_DIR,
-        large_batch_dir=LARGE_BATCH_DIR
+        large_batch_dir=LARGE_BATCH_DIR,
+        large_batch_travel_dir=LARGE_BATCH_TRAVEL_DIR
     )
     
     print(f"Found {len(dataset)} valid schedule instances.")
