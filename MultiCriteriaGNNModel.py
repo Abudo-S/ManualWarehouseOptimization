@@ -113,11 +113,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         )
         
         #assignment head (edge classification for op i -> order j)
-        #input: op_embedding + order_embedding + global + edge_attr (time) + op_activation_prob (predicted by activation head)
-        #64 + 64 + 3 + 1 + 1 = 133
+        #input: op_embedding + order_embedding + global + edge_attr (time + base_travel_time) + op_activation_prob (predicted by activation head)
+        #64 + 64 + 3 + 2 + 1 = 134
         self.assign_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
-            Linear(2 * hidden_dim + 5, hidden_dim), #added 1 extra dim for op_activation_prob (activation coupling)
+            Linear(2 * hidden_dim + 6, hidden_dim), #added 1 extra dim for op_activation_prob (activation coupling)
             ReLU(),
             Linear(hidden_dim, 1)
         )
