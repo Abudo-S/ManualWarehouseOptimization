@@ -202,7 +202,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #STR- compute heuristic demand for activation head
         #assuming that batch_dict['order'] exists to group orders per graph in the batch
         assign_edges = edge_index_dict[('operator', 'assign', 'order')]
-        proc_times = edge_attr_dict[('operator', 'assign', 'order')].squeeze(-1)
+        proc_times = edge_attr_dict[('operator', 'assign', 'order')][:, 0]
         num_orders = x_dict['order'].size(0)
         num_graphs = u.size(0)
         
