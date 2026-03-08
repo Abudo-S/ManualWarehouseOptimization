@@ -15,6 +15,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                  num_layers=3, 
                  heads=4, 
                  dropout=0.2,
+                 head_coupling_dropout=0.5,
                  heuristic_boost_factor=1.15):
         '''
         metadata: Tuple of (node_types, edge_types) from the heterogeneous graph
@@ -22,6 +23,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         num_layers: Number of GNN layers
         heads: Number of attention heads in GATv2
         dropout: Dropout rate for GATv2 layers to regularize the attention mechanism.
+        head_coupling_dropout: Dropout rate for the coupling between heads. To avoid edge over-smoothing over sequence.
+        If we assign head_coupling_dropout=1 (full decoupling), the model will not learn a clean, distinct "Active" vs "Inactive" feature.
+        But the sequence head will return to outputting high-quality spatial sequences.
         heuristic_boost_factor: Used to travel+processing time estimation to give an initial start to activation head with minimum_ops. (ex. +15%)
         (e.g., max time in minutes) to [0,1] range for better training stability.
         defines a multi-criteria GNN model with three heads:
@@ -43,6 +47,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         self.num_layers = num_layers
         self.heads = heads
         self.dropout = dropout
+        self.head_coupling_dropout = torch.nn.Dropout(head_coupling_dropout)
         self.heuristic_boost_factor = heuristic_boost_factor
 
         #node encoders (project raw features to hidden dim)
@@ -321,6 +326,10 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #compute active shared operator score (aActivation coupling) to avoid the possibile vanishing activation MLPS trough assignment head
         #we weight the assignment overlap by the activation probability of the operator
         active_shared_score = torch.sum(probs_i * probs_j * act_probs_1d, dim=1, keepdim=True)
+
+        #apply head coupling dropout
+        shared_op_score = self.head_coupling_dropout(shared_op_score)
+        active_shared_score = self.head_coupling_dropout(active_shared_score)
 
         #concat: [ord_i, ord_j, global, time, shared_op_score]
         #implicit activation MLP signal should be passed through the assignment head; therefore, shared_op_score ()
