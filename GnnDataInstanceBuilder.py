@@ -23,6 +23,9 @@ ALPHA = 1.0 #makespan weight
 BETA = 1000.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
+#virtual base mission for operators to start and end their routes, we need just the id to retrieve the travel time to it.
+BASE_ORDER_NODE_ID = 0 #assuming '0' or 0 is our base node ID in travel_times
+
 #define a global time scale (e.g., standard 8-hour shift in minutes)
 #It must be consistent across training, validation, and decoding
 #used to normalize time features (H_fixed, processing time, travel time) to [0,1] range 
@@ -128,7 +131,7 @@ class GnnDataInstanceBuilder:
         missions_scaled = scaler.fit_transform(mission_feats_raw)
         x_missions = torch.tensor(missions_scaled, dtype=torch.float)
 
-        #operator features [Speed, Fork dims]
+        #operator features [speed, fork dims]
         operator_features = [
             'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
         ]
@@ -253,7 +256,13 @@ class GnnDataInstanceBuilder:
             if op_id in op_map and ord_id in order_map:
                 src_ops.append(op_map[op_id])
                 dst_ords.append(order_map[ord_id])
-                proc_time_list.append([p_time])
+                #proc_time_list.append([p_time]) #doesn't consider base travel time
+
+                #fetch travel time from base (e.g., node 0) to the current order
+                base_travel_time = travel_times.get((BASE_ORDER_NODE_ID, ord_id), 0.0) 
+                
+                #store both processing time and base travel time
+                proc_time_list.append([p_time, base_travel_time])
         
         data['operator', 'assign', 'order'].edge_index = torch.tensor([src_ops, dst_ords], dtype=torch.long)
 
@@ -272,7 +281,7 @@ class GnnDataInstanceBuilder:
         #store max processing time in edge attributes for reference (possible denormalization later in decoder)
         #data['operator', 'assign', 'order'].max_val = torch.tensor([max_proc_time])
 
-        #reverse edge (order -> op):  An operator also needs to know about the Orders it might take (to update its own state/embedding)
+        #reverse edge (order -> op): An operator also needs to know about the orders it might take (to update its own state/embedding)
         rev_edge_index = data['operator', 'assign', 'order'].edge_index.flip([0])
         
         #same edge attributes (travel time is undirected/symmetric usually)
