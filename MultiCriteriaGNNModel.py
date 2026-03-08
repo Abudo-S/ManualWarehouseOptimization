@@ -71,7 +71,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                     (hidden_dim, hidden_dim), 
                     hidden_dim // heads, 
                     heads=heads, 
-                    edge_dim=1, 
+                    edge_dim=2, #processing time + travel time from the base
                     add_self_loops=False, 
                     dropout=dropout
                 ),
@@ -82,7 +82,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                     (hidden_dim, hidden_dim), #(source=order, target=op)
                     hidden_dim // heads, 
                     heads=heads, 
-                    edge_dim=1, 
+                    edge_dim=2, #processing time + travel time from the base
                     add_self_loops=False, 
                     dropout=dropout
                 )
