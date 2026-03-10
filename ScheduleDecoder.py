@@ -14,6 +14,7 @@ from GnnScheduleDataset import GnnScheduleDataset
 LARGE_SCALE_BATCH_NAME = "Batch10000M" #Batch1000M, Batch9000M or Batch10000M
 TARGET_MINI_BATCH_SIZE = 10 #number of missions per mini-batch
 LARGE_BATCH_DIR = "./datasets/large-batch/batch/"
+LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/"
 MISSION_LARGE_BATCH_DIR = "./datasets/large-batch/batch/Batch_1_100M_distanced_A1.0_B1000.0_H90.csv"
 LARGE_SCALE_MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}.csv"
 PREPROCESSED_BATCH_DIR = f"./preprocessed/{LARGE_SCALE_BATCH_NAME}/Batch{TARGET_MINI_BATCH_SIZE}M_idx.xlsx" #idx to be replaced cluster idx
@@ -274,7 +275,7 @@ class ScheduleDecoder:
 
         #decode activations (thresholding)
         chosen_act = (out['activation'].view(-1) > self.act_threshold)
-        print(f"Activation Probabilities (sample): {out['activation'].view(-1)[:10].cpu().detach().numpy()}")
+        print(f"Activation Probabilities (sample - top 10): {out['activation'].view(-1)[:10].cpu().detach().numpy()}")
 
         #feasibility checks
         #activation consistency
@@ -1042,7 +1043,7 @@ class ScheduleDecoder:
         os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
         
         #save schedule
-        with open(os.path.join(self.predicted_schedule_dir, filename), 'w') as f:
+        with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
             json.dump(schedule_data, f, indent=4)
         
         print(f"Schedule exported with name: {filename}")
@@ -1095,7 +1096,15 @@ class ScheduleDecoder:
         seq_attr = batch.edge_attr_dict[('order', 'to', 'order')].cpu().numpy()
         for i in range(seq_idx.shape[1]):
             val = float(seq_attr[i][0]) if seq_attr.ndim > 1 else float(seq_attr[i])
-            travel_time_map[(seq_idx[0, i], seq_idx[1, i])] = val * global_time_scale
+            #travel_time_map[(seq_idx[0, i], seq_idx[1, i])] = val * global_time_scale
+            travel_time_map[(int(seq_idx[0, i]), int(seq_idx[1, i]))] = val * global_time_scale
+        
+        if travel_time_map:
+            avg_travel_time = sum(travel_time_map.values()) / len(travel_time_map)
+            if avg_travel_time == 0: #safety guard in case scaling is broken
+                avg_travel_time = 1.0 #arbitrary fallback
+        else:
+            avg_travel_time = 1.0 #arbitrary fallback
 
         #travel time (order -> order): (u, v) -> t time weighted by sequence prob
         seq_adj = {}
@@ -1269,19 +1278,20 @@ class ScheduleDecoder:
                 
                 #initial start
                 for cand in orders:
+                    t_travel = travel_time_map.get((-1, cand), avg_travel_time)
                     t_proc = proc_time_map.get((op, cand), 0.0)
-                    if t_proc <= h_fixed_mins:
+                    if (t_proc + t_travel) <= h_fixed_mins:
                         curr = cand
                         route_steps.append({
                             "mission_id": all_mission_ids[curr],
                             "_internal": curr,
-                            "start_time": 0.0,
-                            "finish_time": t_proc,
-                            "processing_duration": t_proc,
-                            "travel_duration": 0.0,
+                            "start_time": round(t_travel, 2),
+                            "finish_time": round(t_travel + t_proc, 2),
+                            "processing_duration": round(t_proc, 2),
+                            "travel_duration": round(t_travel, 2),
                             "successor": None
                         })
-                        current_time = t_proc
+                        current_time = t_proc + t_travel
                         unvisited.discard(curr)
                         break
                 
@@ -1307,7 +1317,11 @@ class ScheduleDecoder:
                         #fallback if sequence head fails to find a valid neighbor
                         if not best_next:
                             for neighbor in unvisited:
-                                t_travel = travel_time_map.get((curr, neighbor), 0.0)
+                                t_travel = travel_time_map.get((curr, neighbor), avg_travel_time)
+
+                                if t_travel == 0.0:
+                                            t_travel = avg_travel_time
+
                                 t_proc = proc_time_map.get((op, neighbor), 0.0)
                                 finish = current_time + t_travel + t_proc
                                 
@@ -1357,17 +1371,24 @@ class ScheduleDecoder:
                 for o in list(orders_to_assign):
                     best_op = None
                     best_finish = None
+                    best_t_travel = 0.0 #track the travel time for the chosen operator
+                    best_t_proc = 0.0  #track processing time for the winning op too
                     
                     for op in active_ops:  #only try active operators
                         route = final_op_routes.get(op, [])
                         curr_finish = route[-1]["finish_time"] if route else 0.0
+                        last_node = route[-1]['_internal'] if route else None
+                        t_travel = travel_time_map.get((last_node, o), avg_travel_time) if last_node is not None else 0.0
                         t_proc = proc_time_map.get((op, o), 0.0)
-                        finish = curr_finish + t_proc
+                        finish = curr_finish + t_travel + t_proc
 
                         if finish <= h_fixed_mins:
                             if best_finish is None or finish < best_finish:
                                 best_finish = finish
                                 best_op = op
+                                best_t_travel = t_travel
+                                best_t_proc = t_proc
+
 
                     if best_op is not None:
                         route = final_op_routes[best_op]
@@ -1375,10 +1396,10 @@ class ScheduleDecoder:
                         step = {
                             "mission_id": all_mission_ids[o],
                             "_internal": o,
-                            "start_time": round(start_time, 2),
-                            "finish_time": round(start_time + t_proc, 2),
-                            "processing_duration": round(t_proc, 2),
-                            "travel_duration": 0.0,
+                            "start_time": round(start_time + best_t_travel, 2),
+                            "finish_time": round(start_time + best_t_travel + best_t_proc, 2),
+                            "processing_duration": round(best_t_proc, 2),
+                            "travel_duration": round(best_t_travel, 2),
                             "successor": None,
                         }
 
@@ -1446,7 +1467,7 @@ class ScheduleDecoder:
 
 
 if __name__ == "__main__":
-    use_large_scale = True
+    use_large_scale = False
 
     if use_large_scale:
         #init large-scale dataset
@@ -1455,8 +1476,9 @@ if __name__ == "__main__":
             mission_base_path=MISSION_LARGE_BATCH_DIR,
             edge_base_path=MISSION_LARGE_BATCH_TRAVEL_DIR,
             pallet_types_file_path=UDC_TYPES_DIR,
-            fork_path=FORK_LIFTS_DIR,
-            large_batch_dir=LARGE_BATCH_DIR
+            fork_path=FORK_LIFTS_DIR.replace('10W', ''),
+            large_batch_dir=LARGE_BATCH_DIR,
+            large_batch_travel_dir=LARGE_BATCH_TRAVEL_DIR
         )
     else:
         #init dataset
@@ -1518,11 +1540,32 @@ if __name__ == "__main__":
     #     'sequence': 0.1046
     # }
 
-    #coupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # #coupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.4472,
+    #     'assignment': 0.0678,
+    #     'sequence': 0.1228
+    # }
+
+    # #coupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1 - mean aggregation
+    # best_thresholds =  {
+    #     'activation': 0.4992,
+    #     'assignment': 0.0785,
+    #     'sequence': 0.1168
+    # }
+
+    # #coupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1 - mean aggregation - coupling dropout
+    # best_thresholds =  {
+    #     'activation': 0.4457,
+    #     'assignment': 0.0731,
+    #     'sequence': 0.0848
+    # }
+
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
     best_thresholds =  {
-        'activation': 0.4472,
-        'assignment': 0.0678,
-        'sequence': 0.1228
+        'activation': 0.4777,
+        'assignment': 0.0847,
+        'sequence': 0.1166
     }
 
     model = MultiCriteriaGNNModel(
@@ -1554,7 +1597,7 @@ if __name__ == "__main__":
         act_threshold=best_thresholds['activation'],
         assign_threshold=best_thresholds['assignment'],
         seq_threshold=best_thresholds['sequence'],
-        predicted_schedule_dir=PREDICTED_LARGE_SCHEDULE_DIR
+        predicted_schedule_dir=PREDICTED_LARGE_SCHEDULE_DIR if use_large_scale else PREDICTED_SCHEDULE_DIR
     )
     
     print("Starting Schedule Validation - total batches:", len(loader))
