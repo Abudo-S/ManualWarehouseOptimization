@@ -170,6 +170,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #the message passing is averaging everything to death.
         #store original operator embeddings
         orig_op_emb = x_dict['operator'].clone()
+        orig_ord_emb = x_dict['order'].clone()
 
         #message passing
         for conv in self.convs:
@@ -181,9 +182,10 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             x_dict = {key: torch.clamp(x, min=-1e4, max=1e4).relu() for key, x in x_dict.items()} #prevent exploding activations before ReLU
             x_dict = {key: torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4) for key, x in x_dict.items()} #prevent NaNs
 
-        #mix original + message-passed embeddings
+        #mix original + message-passing embeddings
         #preserve identity while adding context
         x_dict['operator'] = 0.5 * orig_op_emb + 0.5 * x_dict['operator']
+        x_dict['order'] = 0.5 * orig_ord_emb + 0.5 * x_dict['order']
 
         #if a single HeteroData object is passed (not a batch), batch_dict should be tensor of zeros
         if batch_dict is None:
