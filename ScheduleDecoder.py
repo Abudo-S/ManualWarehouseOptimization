@@ -1562,10 +1562,18 @@ if __name__ == "__main__":
     # }
 
     #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.4777,
+    #     'assignment': 0.0847,
+    #     'sequence': 0.1166
+    # }
+
+    #with order embedding
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
     best_thresholds =  {
-        'activation': 0.4777,
-        'assignment': 0.0847,
-        'sequence': 0.1166
+        'activation': 0.4114,
+        'assignment': 0.2154,
+        'sequence': 0.2369
     }
 
     model = MultiCriteriaGNNModel(
@@ -1576,7 +1584,7 @@ if __name__ == "__main__":
         dropout=best_conf['dropout']
     ).to(device)
     
-    model.load_model() #load pre-trained model weights
+    model.load_model(device=device) #load pre-trained model weights
 
     totals = {"n": 0, "act_f1": 0.0, "assign_f1": 0.0, "seq_f1": 0.0,
               "feasible": 0, "gap_sum": 0.0}
