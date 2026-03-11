@@ -4,6 +4,7 @@
         "num_operators": 10,
         "valid": true,
         "schedule_id": "schedule10M_121_A1.0_B1000.0_H90",
+        "unassigned_orders": 0,
         "horizon_valid": true,
         "horizon_violations": []
     },
@@ -14,33 +15,33 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3881736,
-                        "start_time": 0.0,
-                        "finish_time": 11.223333477973938,
-                        "processing_duration": 11.223333477973938,
-                        "travel_duration": 0.0,
+                        "mission_id": 3889697,
+                        "start_time": 10.78,
+                        "finish_time": 22.0,
+                        "processing_duration": 11.22,
+                        "travel_duration": 10.78,
+                        "successor": 3890976
+                    },
+                    {
+                        "mission_id": 3890976,
+                        "start_time": 32.77,
+                        "finish_time": 44.0,
+                        "processing_duration": 11.22,
+                        "travel_duration": 10.78,
                         "successor": 3891033
                     },
                     {
                         "mission_id": 3891033,
-                        "start_time": 22.0,
-                        "finish_time": 33.22,
+                        "start_time": 54.77,
+                        "finish_time": 66.0,
                         "processing_duration": 11.22,
                         "travel_duration": 10.78,
-                        "successor": 3889697
+                        "successor": 3882362
                     },
                     {
-                        "mission_id": 3889697,
-                        "start_time": 44.0,
-                        "finish_time": 55.22,
-                        "processing_duration": 11.22,
-                        "travel_duration": 10.78,
-                        "successor": 3884693
-                    },
-                    {
-                        "mission_id": 3884693,
-                        "start_time": 66.0,
-                        "finish_time": 77.22,
+                        "mission_id": 3882362,
+                        "start_time": 76.77,
+                        "finish_time": 88.0,
                         "processing_duration": 11.22,
                         "travel_duration": 10.78,
                         "successor": null
@@ -54,27 +55,27 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3882362,
+                        "mission_id": 3881736,
                         "start_time": 0.0,
                         "finish_time": 11.22,
                         "processing_duration": 11.22,
                         "travel_duration": 0.0,
+                        "successor": 3884693
+                    },
+                    {
+                        "mission_id": 3884693,
+                        "start_time": 22.0,
+                        "finish_time": 33.22,
+                        "processing_duration": 11.22,
+                        "travel_duration": 10.78,
                         "successor": 3889422
                     },
                     {
                         "mission_id": 3889422,
-                        "start_time": 11.22,
-                        "finish_time": 22.44,
+                        "start_time": 44.0,
+                        "finish_time": 55.22,
                         "processing_duration": 11.22,
-                        "travel_duration": 0.0,
-                        "successor": 3890976
-                    },
-                    {
-                        "mission_id": 3890976,
-                        "start_time": 22.44,
-                        "finish_time": 33.66,
-                        "processing_duration": 11.22,
-                        "travel_duration": 0.0,
+                        "travel_duration": 10.78,
                         "successor": null
                     }
                 ]
