@@ -363,11 +363,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #save model weights
         torch.save(self.state_dict(), save_path)
 
-    def load_model(self, save_path=SAVE_MODEL_PATH):
+    def load_model(self, save_path=SAVE_MODEL_PATH, device='cuda'):
         print(f"Loading model weights from {save_path}...")
         
         #load model weights
-        self.load_state_dict(torch.load(save_path))
+        self.load_state_dict(torch.load(save_path, map_location=torch.device(device)))
         self.eval()
 
     def save_model_in_training(self,
