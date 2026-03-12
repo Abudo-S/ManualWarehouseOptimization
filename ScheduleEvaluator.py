@@ -86,7 +86,13 @@ class ScheduleEvaluator:
             self.schedule_train_dataset = train_set
             self.schedule_val_dataset = val_set
         
-    def weighted_loss(self, predictions, ground_truth, u_batch):
+    def weighted_loss(self, 
+                      predictions, 
+                      ground_truth, 
+                      u_batch,
+                      act_loss_weight=2.0,
+                      assign_loss_weight=1.0,
+                      seq_loss_weight=1.0):
         """
         computes weighted BCE loss for activation, assignment, and sequence heads.
         total Loss = beta * act_loss + alpha * (assign_loss + seq_loss)
@@ -120,7 +126,8 @@ class ScheduleEvaluator:
         #weighted sum
         #Note that alpha/beta need to be scaled down if they are large (e.g. 100) to prevent explosion
         #or rely on the optimizer (Adam) to handle scaling.
-        total_loss = (beta * loss_act) + (alpha * (loss_assign + loss_seq))
+        #total_loss = (beta * loss_act) + (alpha * (loss_assign + loss_seq))
+        total_loss = (beta * (act_loss_weight * loss_act)) + (alpha * ((assign_loss_weight * loss_assign) + (seq_loss_weight * loss_seq)))
         
         #avoid division by zero
         #sum_weights = alpha + beta + 1e-6
