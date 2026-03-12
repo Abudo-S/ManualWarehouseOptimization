@@ -69,7 +69,6 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed
             })
 
-
     def evaluate_makespan_optimality(self):
         """
         Evaluates the makespan optimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
@@ -92,17 +91,15 @@ class ScheduleOptimalityEvaluator:
             with open(pred_path) as f:
                 pred = json.load(f)
 
-            pred_makespan = 0.0
-            for op in pred["operators"]:
-                for route in op["routes"]:     
-                    if route:          
-                        route.sort(key=lambda x: x["finish_time"])
-                        #sum of finish times of last missions in each route, as a proxy for makespan (since we don't have the actual schedule structure here)
-                        pred_makespan += route[-1]["finish_time"] 
+            #take the maximum finish time of all routes in all operators
+            pred_makespan = max([sorted(route, key=lambda x: x["finish_time"])[-1]["finish_time"]
+                                 for op in pred["operators"] 
+                                 for route in op["routes"]])
+
 
             df_opt = pd.read_csv(opt_path)
             #sum of finish times of last missions for each operator, as a proxy for makespan
-            opt_makespan = df_opt.groupby("Operator")["Finish"].max().sum() 
+            opt_makespan = df_opt.groupby("Operator")["Finish"].max().max()
 
             # print(f"Evaluating {pred_path} against {opt_path} with alpha={alpha}, beta={beta}, H_fixed={h_fixed}")
             # print(f"Predicted Makespan: {pred_makespan}, Optimal Makespan: {opt_makespan}")
@@ -180,17 +177,15 @@ class ScheduleOptimalityEvaluator:
             with open(pred_path) as f:
                 pred = json.load(f)
 
-            pred_makespan = 0.0
-            for op in pred["operators"]:
-                for route in op["routes"]:     
-                    if route:          
-                        route.sort(key=lambda x: x["finish_time"])
-                        pred_makespan += route[-1]["finish_time"] 
+            #take the maximum finish time of all routes in all operators
+            pred_makespan = max([sorted(route, key=lambda x: x["finish_time"])[-1]["finish_time"]
+                                 for op in pred["operators"] 
+                                 for route in op["routes"]])
 
             pred_activation = len(pred["operators"]) #number of operators used in the predicted schedule
 
             df_opt = pd.read_csv(opt_path)
-            opt_makespan = df_opt.groupby("Operator")["Finish"].max().sum() 
+            opt_makespan = df_opt.groupby("Operator")["Finish"].max().max() 
             opt_activation = len(df_opt["Operator"].unique()) #number of unique operators used in the optimal schedule
 
             makespan_opt_gap = (pred_makespan - opt_makespan) / opt_makespan if opt_makespan > 0 else float('inf')
@@ -222,16 +217,69 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
 
+    def evaluate_total_flow_time_optimality(self):
+        """
+        Evaluates the total_flow_time optimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
+        Optimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
+        Note that it's not considered as a part of the combined optimality gap metric, 
+        since it's not directly related to makespan or activation. But it measures the total elapsed time of all missions in the schedule.
+        """
+
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            opt_path = item['optimal_schedule_path']
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            pred_total_flow_time = 0.0
+            for op in pred["operators"]:
+                for route in op["routes"]:     
+                    if route:          
+                        route.sort(key=lambda x: x["finish_time"])
+                        #sum of finish times of last missions in each route, as a proxy for total_flow_time (since we don't have the actual schedule structure here)
+                        pred_total_flow_time += route[-1]["finish_time"] 
+
+            df_opt = pd.read_csv(opt_path)
+            #sum of finish times of last missions for each operator, as a proxy for total_flow_time
+            opt_total_flow_time = df_opt.groupby("Operator")["Finish"].max().sum() 
+
+            # print(f"Evaluating {pred_path} against {opt_path} with alpha={alpha}, beta={beta}, H_fixed={h_fixed}")
+            # print(f"Predicted total_flow_time: {pred_total_flow_time}, Optimal total_flow_time: {opt_total_flow_time}")
+            # print(f"Relative Error for batch [{batch_num}]: {(pred_total_flow_time - opt_total_flow_time) / opt_total_flow_time:.2%}\n")
+
+            optimality_gap = (pred_total_flow_time - opt_total_flow_time) / opt_total_flow_time if opt_total_flow_time > 0 else float('inf')
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_total_flow_time': pred_total_flow_time,
+                'opt_total_flow_time': opt_total_flow_time,
+                'optimality_gap': round(optimality_gap, 4) * 100 #convert to percentage
+            })
+            
+        return overall_results
+
 if __name__ == "__main__":
     evaluator = ScheduleOptimalityEvaluator(SCHEDULE_DIR, PREDICTED_SCHEDULE_DIR)
     makespan_results = evaluator.evaluate_makespan_optimality()
     activation_results = evaluator.evaluate_activation_optimality()
     combined_results = evaluator.evaluate_combined_optimality()
+    total_flow_time_results = evaluator.evaluate_total_flow_time_optimality()
 
     #convert results to DataFrames for better visualization
     df_makespan = pd.DataFrame(makespan_results)
     df_activation = pd.DataFrame(activation_results)
     df_combined = pd.DataFrame(combined_results)
+    df_total_flow_time = pd.DataFrame(total_flow_time_results)
 
     print("Makespan Optimality Results:")
     print(df_makespan)
@@ -241,3 +289,6 @@ if __name__ == "__main__":
 
     print("\nCombined Optimality Results:")
     print(df_combined)
+
+    print("\nTotal Flow Time Optimality Results:")
+    print(df_total_flow_time)
