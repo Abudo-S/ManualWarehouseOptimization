@@ -154,10 +154,10 @@ class MultiCriteriaMIPModel:
             '''
             base sequencing/linking flow: Non-Overlapping sequencing from base to first mission.
             '''
-            if j not in model.J:
-                return model.S[j] >= model.T[0, j] - model.M_Time * (1 - model.z[i, 0, j])
+            #if j not in model.J:
+            return model.S[j] >= model.T[0, j] - model.M_Time * (1 - model.z[i, 0, j])
             
-            return Constraint.Skip
+            #return Constraint.Skip
 
         def sequencing_disjunction_rule(model, i, j, k):
             '''
@@ -179,8 +179,8 @@ class MultiCriteriaMIPModel:
             Else z[i,0,j] = 0
             '''
             
-            if j not in model.J:
-                return Disjunction.Skip
+            # if j not in model.J_prime: #to consider the travel time from base to first mission 
+            #     return Disjunction.Skip
             return [
                 [model.z[i, 0, j] == 1, model.S[j] >= model.T[0, j]],
                 [model.z[i, 0, j] == 0]
@@ -414,7 +414,7 @@ class MultiCriteriaMIPModel:
         this can help reduce the problem size and improve solver performance.
         '''
         assignments = {}
-        # Current "end position" for each operator (starts at base=0)
+        #current "end position" for each operator (starts at base=0)
         operator_position = {i: 0 for i in operators}  #last mission or base
         operator_load = {i: 0.0 for i in operators}    #total time so far
         
@@ -426,7 +426,7 @@ class MultiCriteriaMIPModel:
             
             for j in unassigned:
                 for i in operators:
-                    # Travel from current position to j + processing at j
+                    #travel from current position to j + processing at j
                     travel_to_j = travel_times[(operator_position[i], j)]
                     process_j = processing_times[(i, j)]
                     total_add = travel_to_j + process_j
@@ -436,18 +436,18 @@ class MultiCriteriaMIPModel:
                         best_assignment = (i, j)
             
             if best_assignment is None:
-                break  # No feasible assignment
+                break  #no feasible assignment
                 
             i, j = best_assignment
             assignments[(i, j)] = 1
             
-            # Update operator state
+            #update operator state
             operator_load[i] += best_load_increase
-            operator_position[i] = j  # Now ends at j
+            operator_position[i] = j  #op ends at j
             
             unassigned.remove(j)
         
-        # Fix promising assignments in model (threshold for confidence)
+        #fix assignments in model (threshold for confidence)
         for (i,j), val in assignments.items():
             model.x[i,j].fix(1)
         
