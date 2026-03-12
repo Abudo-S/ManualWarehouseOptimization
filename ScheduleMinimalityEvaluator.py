@@ -101,11 +101,11 @@ class ScheduleMinimalityEvaluator:
             else:
                 print(f"Missing mission or travel file for batch {batch_num}")
     
-    def evaluate_makespan_minimality(self):
+    def evaluate_total_flow_time_minimality(self):
         """
-        Evaluates the makespan minimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
+        Evaluates the total_flow_time minimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
         the negative gap means that the predicted schedule is better than minimal schedule (which can never happen),
-        but it means that the model has activated more operators than the minimal schedule (so it got a better makespan),
+        but it means that the model has activated more operators than the minimal schedule (so it got a better total_flow_time),
         Minimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
         """
 
@@ -179,37 +179,33 @@ class ScheduleMinimalityEvaluator:
             {mission_processing_times[k[1]].append(processing_time) for k, processing_time in processing_times.items()}
             total_processing_mins =[min(p_time) for mission, p_time in mission_processing_times.items()]
 
-            min_makespan = sum(total_travel_mins) + sum(total_processing_mins)
-            t_pruned = (min_makespan/h_fixed) * min(total_travel_mins)
-            min_makespan = min_makespan - t_pruned
+            min_total_flow_time = sum(total_travel_mins) + sum(total_processing_mins)
+            t_pruned = (min_total_flow_time/h_fixed) * min(total_travel_mins)
+            min_total_flow_time = min_total_flow_time - t_pruned
 
-            pred_makespan = 0.0
+            pred_total_flow_time = 0.0
             for op in pred["operators"]:
                 for route in op["routes"]:     
                     if route:          
                         route.sort(key=lambda x: x["finish_time"])
-                        #sum of finish times of last missions in each route, as a proxy for makespan (since we don't have the actual schedule structure here)
-                        pred_makespan += route[-1]["finish_time"] 
+                        #sum of finish times of last missions in each route, as a proxy for total_flow_time (since we don't have the actual schedule structure here)
+                        pred_total_flow_time += route[-1]["finish_time"] 
 
-            # print(f"Evaluating {pred_path} against {opt_path} with alpha={alpha}, beta={beta}, H_fixed={h_fixed}")
-            # print(f"Predicted Makespan: {pred_makespan}, Optimal Makespan: {opt_makespan}")
-            # print(f"Relative Error for batch [{batch_num}]: {(pred_makespan - opt_makespan) / opt_makespan:.2%}\n")
-
-            minimality_gap = (pred_makespan - min_makespan) / min_makespan if min_makespan > 0 else float('inf')
+            minimality_gap = (pred_total_flow_time - min_total_flow_time) / min_total_flow_time if min_total_flow_time > 0 else float('inf')
 
             overall_results.append({
                 'batch_num': batch_num,
                 'alpha': alpha,
                 'beta': beta,
                 'h_fixed': h_fixed,
-                'pred_makespan': pred_makespan,
-                'min_makespan': min_makespan,
+                'pred_total_flow_time': pred_total_flow_time,
+                'min_total_flow_time': min_total_flow_time,
                 'minimality_gap': round(minimality_gap, 4) * 100 #convert to percentage
             })
             
         return overall_results
     
-    def evaluate_activation_minimality(self, makespan_results):
+    def evaluate_activation_minimality(self, total_flow_time_results):
         """
         Evaluates the minimality of each batch predicted schedules in terms of number of activations (operators used), compared to the minimal values.
         Minimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
@@ -220,7 +216,7 @@ class ScheduleMinimalityEvaluator:
         for item in self.items:
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
-            min_makespan = [makespan_result['min_makespan'] for makespan_result in makespan_results if makespan_result['batch_num'] == batch_num][0]
+            min_total_flow_time = [total_flow_time_result['min_total_flow_time'] for total_flow_time_result in total_flow_time_results if total_flow_time_result['batch_num'] == batch_num][0]
             alpha = item['alpha']
             beta = item['beta']
             h_fixed = item['h_fixed']
@@ -230,7 +226,7 @@ class ScheduleMinimalityEvaluator:
 
             pred_activation = len(pred["operators"])  #number of operators used in the predicted schedule
     
-            min_activation = math.ceil(min_makespan/h_fixed)
+            min_activation = math.ceil(min_total_flow_time/h_fixed)
 
             minimality_gap = (pred_activation - min_activation) / min_activation if min_activation > 0 else float('inf')
 
@@ -241,6 +237,47 @@ class ScheduleMinimalityEvaluator:
                 'h_fixed': h_fixed,
                 'pred_activation': pred_activation,
                 'min_activation': min_activation,
+                'minimality_gap': round(minimality_gap, 4) * 100 #convert to percentage
+            })
+            
+        return overall_results
+    
+    def evaluate_makespan_minimality(self, total_flow_time_results, activation_results):
+        """
+        Evaluates the minimality of each batch predicted schedules in terms of number of makespan (operators used), compared to the minimal values.
+        Minimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
+        """
+
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            min_total_flow_time = [total_flow_time_result['min_total_flow_time'] for total_flow_time_result in total_flow_time_results if total_flow_time_result['batch_num'] == batch_num][0]
+            min_activation = [activation_result['min_activation'] for activation_result in activation_results if activation_result['batch_num'] == batch_num][0]
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            #take the maximum finish time of all routes in all operators
+            pred_makespan = max([sorted(route, key=lambda x: x["finish_time"])[-1]["finish_time"]
+                                 for op in pred["operators"] 
+                                 for route in op["routes"]])
+
+            min_makespan = min_total_flow_time/min_activation
+
+            minimality_gap = (pred_makespan - min_makespan) / min_makespan if min_makespan > 0 else float('inf')
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_activation': pred_makespan,
+                'min_makespan': min_makespan,
                 'minimality_gap': round(minimality_gap, 4) * 100 #convert to percentage
             })
             
@@ -321,19 +358,19 @@ class ScheduleMinimalityEvaluator:
 
             #(oid_fork_lift, cd_mission): processing_time
             {mission_processing_times[k[1]].append(processing_time) for k, processing_time in processing_times.items()}
-            total_processing_mins =[min(p_time) for mission, p_time in mission_processing_times.items()]
+            total_processing_mins = [min(p_time) for mission, p_time in mission_processing_times.items()]
 
-            min_makespan = sum(total_travel_mins) + sum(total_processing_mins)
-            t_pruned = (min_makespan/h_fixed) * min(total_travel_mins)
-            min_makespan = min_makespan - t_pruned
-            min_activation = math.ceil(min_makespan/h_fixed)
-        
-            pred_makespan = 0.0
-            for op in pred["operators"]:
-                for route in op["routes"]:     
-                    if route:          
-                        route.sort(key=lambda x: x["finish_time"])
-                        pred_makespan += route[-1]["finish_time"] 
+            min_total_flow_time = sum(total_travel_mins) + sum(total_processing_mins)
+            t_pruned = (min_total_flow_time/h_fixed) * min(total_travel_mins)
+            min_total_flow_time = min_total_flow_time - t_pruned
+
+            min_activation = math.ceil(min_total_flow_time/h_fixed)
+            min_makespan = min_total_flow_time/min_activation
+
+            #take the maximum finish time of all routes in all operators
+            pred_makespan = max([sorted(route, key=lambda x: x["finish_time"])[-1]["finish_time"]
+                                 for op in pred["operators"] 
+                                 for route in op["routes"]])
 
             pred_activation = len(pred["operators"]) #number of operators used in the predicted schedule
 
@@ -373,15 +410,16 @@ class ScheduleMinimalityEvaluator:
 
 if __name__ == "__main__":
     #mini-batch
-    # evaluator = ScheduleMinimalityEvaluator(mission_batch_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/batch",
-    #                                         mission_batch_travel_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/travel",
-    #                                         predicted_schedule_dir=PREDICTED_SCHEDULE_DIR, 
-    #                                         is_mini_batch=True)
+    evaluator = ScheduleMinimalityEvaluator(mission_batch_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/batch",
+                                            mission_batch_travel_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/travel",
+                                            predicted_schedule_dir=PREDICTED_SCHEDULE_DIR, 
+                                            is_mini_batch=True)
     
-    evaluator = ScheduleMinimalityEvaluator()
+    #evaluator = ScheduleMinimalityEvaluator()
     
-    makespan_results = evaluator.evaluate_makespan_minimality()
-    activation_results = evaluator.evaluate_activation_minimality(makespan_results)
+    total_flow_time_results = evaluator.evaluate_total_flow_time_minimality()
+    activation_results = evaluator.evaluate_activation_minimality(total_flow_time_results)
+    makespan_results = evaluator.evaluate_makespan_minimality(total_flow_time_results, activation_results)
     combined_results = evaluator.evaluate_combined_minimality()
 
     #convert results to DataFrames for better visualization
