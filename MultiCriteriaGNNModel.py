@@ -309,6 +309,14 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #op_activation_prob = out_activation[src_idx].detach() #detach to avoid backpropagation from activation head
         op_activation_prob = out_activation[src_idx]
         
+        #ensure 2D
+        if op_activation_prob.dim() == 1:
+            op_activation_prob = op_activation_prob.unsqueeze(1)
+            
+        src_monotonic_id = monotonic_id[src_idx]
+        if src_monotonic_id.dim() == 1:
+            src_monotonic_id = src_monotonic_id.unsqueeze(1)
+
         #concat: [op, order, global, time, op_activation_prob]
         #assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr, op_activation_prob], dim=1)
         assign_input = torch.cat([
