@@ -53,9 +53,10 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #node encoders (project raw features to hidden dim)
         self.order_lin = Linear(10, hidden_dim) # mission features: 'WEIGHT', 'HEIGHT', 'WIDTH', 'LENGTH', 'FROM_X', 'FROM_Y', 'FROM_Z','TO_X', 'TO_Y', 'TO_Z'
         
-        #self.op_lin = Linear(7, hidden_dim) # operator features: 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
+        #physical features
+        self.op_lin = Linear(7, hidden_dim) # operator features: 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
         #self.op_lin = Linear(8, hidden_dim) # operator features: 'ID', 'SPEED', 'UP_SPEED', 'UP_SPEED_WITH_LOAD', 'DOWN_SPEED', 'DOWN_SPEED_WITH_LOAD', 'FORK_WIDTH', 'FORK_LENGTH'
-        self.op_lin = Linear(15, hidden_dim)  # 7 original + 8 positional encoding
+        #self.op_lin = Linear(15, hidden_dim)  # 7 original + 8 positional encoding
 
         #message passing layers (encoder)
         self.convs = torch.nn.ModuleList()
@@ -162,9 +163,15 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         - Assignment: Probability that an operator should be assigned to a specific order.
         - Sequence: Probability that one order should precede another in the sequence.
         """
+        #assuming operator features are [M, 15] where first 7 are physical, last 8 are PE
+        raw_op_features = x_dict['operator']
+        op_physical = raw_op_features[:, :7]
+        op_pe = raw_op_features[:, 7:]
+
         #initial projection
         x_dict['order'] = self.order_lin(x_dict['order']).relu()
-        x_dict['operator'] = self.op_lin(x_dict['operator']).relu()
+        #x_dict['operator'] = self.op_lin(x_dict['operator']).relu()
+        x_dict['operator'] = self.op_lin(op_physical).relu() #pass only physical features through GNN
         
         #since positional encodings are being completely washed out by GATv2Conv (mean pairwise diff still 0.000000),
         #the message passing is averaging everything to death.
@@ -202,7 +209,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #expand u: [1, 3] -> [num_ops, 3]
         op_batch = batch_dict['operator']
         u_ops = u[op_batch] #match batch size for multiple graphs, shape: [num_ops, 3]
-        op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
+
         #num_ops = x_dict['operator'].size(0)
         #u_ops = u.expand(num_ops, -1)
         
@@ -256,7 +263,14 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #concat: [op_emb, global, op_demand]
         #we'll need the raw logits or probabilities to feed to the next head
         #op_feat_final = torch.cat([x_dict['operator'], u_ops], dim=1)
-        op_feat_final = torch.cat([x_dict['operator'], u_ops, op_demand_feature.unsqueeze(1)], dim=1) #add minimum estimated ops
+        #op_feat_final = torch.cat([x_dict['operator'], u_ops, op_demand_feature.unsqueeze(1)], dim=1) #add minimum estimated ops
+        op_feat_final = torch.cat([
+            x_dict['operator'], 
+            u_ops, 
+            op_demand_feature.unsqueeze(1),
+            op_pe #injects explicit id/location logic
+        ], dim=1) 
+
         #apply sigmoid to squash raw logits to [0, 1] probability
         out_activation = torch.sigmoid(self.activation_head(op_feat_final))
 
@@ -280,7 +294,15 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         op_activation_prob = out_activation[src_idx]
         
         #concat: [op, order, global, time, op_activation_prob]
-        assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr, op_activation_prob], dim=1)
+        #assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr, op_activation_prob], dim=1)
+        assign_input = torch.cat([
+            op_emb, 
+            ord_emb, 
+            u_edges, 
+            edge_attr, 
+            op_activation_prob,
+            op_pe[src_idx] #allows MLP to distinguish perfectly symmetric operators
+        ], dim=1)
 
         #the model considers h_fixed by directly concatenating it to the input vector of the final decision head (assign MLP).
         #Which allows the MLPs to learn a decision boundary that depends on h_fixed.
