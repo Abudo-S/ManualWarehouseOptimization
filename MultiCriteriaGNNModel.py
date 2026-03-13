@@ -111,7 +111,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #we concat node_embedding (64) + global (3) = 67 inputs
         #+1 dim: [min_ops_needed]
         #input_dim_with_global = hidden_dim + 3
-        input_dim_with_global = hidden_dim + 3 + 1
+        input_dim_with_global = hidden_dim + 3 + 1 + 8
         
         #activation head (node classification for operators)
         self.activation_head = Sequential(
@@ -121,11 +121,13 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         )
         
         #assignment head (edge classification for op i -> order j)
-        #input: op_embedding + order_embedding + global + edge_attr (time + base_travel_time) + op_activation_prob (predicted by activation head)
-        #64 + 64 + 3 + 2 + 1 = 134
+        #input: op_embedding + order_embedding + global + edge_attr (time + base_travel_time) 
+        #+ op_activation_prob (predicted by activation head) + raw_PE (8)
+        #64 + 64 + 3 + 2 + 1 + 8 = 134
+        input_dim_assignment  = 2 * hidden_dim + 6 + 8 #added 1 extra dim for op_activation_prob (activation coupling)
         self.assign_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
-            Linear(2 * hidden_dim + 6, hidden_dim), #added 1 extra dim for op_activation_prob (activation coupling)
+            Linear(input_dim_assignment , hidden_dim), 
             ReLU(),
             Linear(hidden_dim, 1)
         )
@@ -135,10 +137,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #64 + 64 + 3 + 1 + 1 = 133
         #input: order_embedding_i + order_embedding_j + global + edge_Attr (time) + shared_op_score, active_shared_score
         #64 + 64 + 3 + 1 + 1 + 1 = 134
+        input_dim_sequence = 2 * hidden_dim + 6 #explicit coupling to assignment & activation
         self.seq_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without assignment feedback
             #Linear(2 * hidden_dim + 5, hidden_dim), #explicit coupling to assignment; therefore, implicit coupling to activation (though assignment)
-            Linear(2 * hidden_dim + 6, hidden_dim), #explicit coupling to assignment & activation
+            Linear(input_dim_sequence, hidden_dim), 
             ReLU(),
             Linear(hidden_dim, 1)
         )
