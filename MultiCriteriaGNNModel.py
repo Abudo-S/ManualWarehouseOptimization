@@ -108,11 +108,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #decision heads (decoders)
         
         #global context (u) has 3 dims: [Alpha, Beta, H_fixed]
-        #we concat node_embedding (64) + global (3) = 67 inputs
+        #we concat node_embedding (64) + global (3) + monotonic_id (1) + op_pe (8) = 67 inputs
         #+1 dim: [min_ops_needed]
         #input_dim_with_global = hidden_dim + 3
-        input_dim_with_global = hidden_dim + 3 + 1 + 8
-        
+        input_dim_with_global = hidden_dim + 3 + 1 + 1 + 8
+
         #activation head (node classification for operators)
         self.activation_head = Sequential(
             Linear(input_dim_with_global, hidden_dim),
@@ -122,9 +122,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         #assignment head (edge classification for op i -> order j)
         #input: op_embedding + order_embedding + global + edge_attr (time + base_travel_time) 
-        #+ op_activation_prob (predicted by activation head) + raw_PE (8)
+        #+ op_activation_prob (predicted by activation head) + monotonic_id (1) + raw_PE (8)
         #64 + 64 + 3 + 2 + 1 + 8 = 134
-        input_dim_assignment  = 2 * hidden_dim + 6 + 8 #added 1 extra dim for op_activation_prob (activation coupling)
+        input_dim_assignment  = 2 * hidden_dim + 6 + 1 + 8 #added 1 extra dim for op_activation_prob (activation coupling)
         self.assign_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
             Linear(input_dim_assignment , hidden_dim), 
@@ -204,6 +204,18 @@ class MultiCriteriaGNNModel(torch.nn.Module):
                 for key, x in x_dict.items()
             }
 
+        #monotonic id [0 -> 1.0] for symmetry breaking
+        op_batch = batch_dict['operator']
+        num_ops_total = x_dict['operator'].size(0)
+        monotonic_id = torch.zeros((num_ops_total, 1), dtype=torch.float, device=x_dict['operator'].device)
+
+        for i in range(u.size(0)):
+            mask = (op_batch == i)
+            num_ops_in_graph = mask.sum()
+            if num_ops_in_graph > 0:
+                local_ids = torch.arange(num_ops_in_graph, dtype=torch.float, device=x_dict['operator'].device) / num_ops_in_graph
+                monotonic_id[mask, 0] = local_ids
+
         #global context
         #u is [1, 3] (single graph batch). Broadcast to nodes if necessary or just concat.
         #an efficient way is to expand u to match node count during prediction.
@@ -271,6 +283,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             x_dict['operator'], 
             u_ops, 
             op_demand_feature.unsqueeze(1),
+            monotonic_id,
             op_pe #injects explicit id/location logic
         ], dim=1) 
 
@@ -304,6 +317,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             u_edges, 
             edge_attr, 
             op_activation_prob,
+            monotonic_id,
             op_pe[src_idx] #allows MLP to distinguish perfectly symmetric operators
         ], dim=1)
 
