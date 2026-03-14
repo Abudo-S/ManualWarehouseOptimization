@@ -115,9 +115,12 @@ class ScheduleEvaluator:
         true_assign = ground_truth['operator', 'assign', 'order'].y.view(-1, 1)
         true_seq = ground_truth['order', 'to', 'order'].y.view(-1, 1)
         
+        smoothing = 0.1
+        true_assign_smoothed = true_assign * (1.0 - smoothing) + 0.5 * smoothing
+
         #BCE losses
         loss_act = F.binary_cross_entropy(pred_act, true_act)
-        loss_assign = F.binary_cross_entropy(pred_assign, true_assign)
+        loss_assign = F.binary_cross_entropy(pred_assign, true_assign_smoothed)
         loss_seq = F.binary_cross_entropy(pred_seq, true_seq)
         
         #extract alpha/beta (mean over batch)
