@@ -130,7 +130,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         self.assign_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
             Linear(input_dim_assignment , hidden_dim), 
+            BatchNorm1d(hidden_dim),
             ReLU(),
+            torch.nn.Dropout(self.dropout),
             Linear(hidden_dim, 1)
         )
         
@@ -360,9 +362,13 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #apply sigmoid to squash raw logits to [0, 1] probability
         #out_assign = torch.sigmoid(self.assign_head(assign_input))
 
+        #this prevents the probabilities from spiking to 1.0 instantly in softmax.
+        temperature = 2.0 
+        assign_logits_smoothed = self.assign_head(assign_input) / temperature
+
         #enforce the sum of probabilities of operators for a specific order to equal exactly 1.0,
         #so that the assignment is deterministic for each order
-        out_assign = tg_softmax(self.assign_head(assign_input), dst_idx) 
+        out_assign = tg_softmax(assign_logits_smoothed, dst_idx) 
 
         #head 3: sequence (order -> order edges)
         src_idx, dst_idx = edge_index_dict[('order', 'to', 'order')]
