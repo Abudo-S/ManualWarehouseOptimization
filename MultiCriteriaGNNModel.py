@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn import Linear, Sequential, ReLU, BatchNorm1d
 from torch_geometric.nn import HeteroConv, GATv2Conv, to_hetero
+from torch_geometric.utils import softmax as tg_softmax
 import os
 
 SAVE_MODEL_PATH = "checkpoints/gnn_model_weights.pth"
@@ -336,7 +337,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
 
         #enforce the sum of probabilities for op 0, op 1, op 2... for a specific order to equal exactly 1.0.
         #so that the assignment is deterministic for each order
-        out_assign = torch.softmax(self.assign_head(assign_input), dst_idx) 
+        out_assign = tg_softmax(self.assign_head(assign_input), dst_idx) 
 
         #head 3: sequence (order -> order edges)
         src_idx, dst_idx = edge_index_dict[('order', 'to', 'order')]
