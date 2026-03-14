@@ -333,11 +333,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #the model considers h_fixed by directly concatenating it to the input vector of the final decision head (assign MLP).
         #Which allows the MLPs to learn a decision boundary that depends on h_fixed.
         #apply sigmoid to squash raw logits to [0, 1] probability
-        #out_assign = torch.sigmoid(self.assign_head(assign_input))
+        out_assign = torch.sigmoid(self.assign_head(assign_input))
 
         #enforce the sum of probabilities for op 0, op 1, op 2... for a specific order to equal exactly 1.0.
         #so that the assignment is deterministic for each order
-        out_assign = tg_softmax(self.assign_head(assign_input), dst_idx) 
+        #out_assign = tg_softmax(self.assign_head(assign_input), dst_idx) 
 
         #head 3: sequence (order -> order edges)
         src_idx, dst_idx = edge_index_dict[('order', 'to', 'order')]
