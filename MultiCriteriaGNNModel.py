@@ -109,9 +109,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #decision heads (decoders)
         
         #global context (u) has 3 dims: [Alpha, Beta, H_fixed]
-        #we concat node_embedding (64) + global (3) + monotonic_id (1) + op_pe (8) = 67 inputs
+        #we concat node_embedding (64) + global (3) + op_demand_feature (1) + monotonic_id (1) + op_pe (8) = 67 inputs
         #+1 dim: [min_ops_needed]
-        input_dim_with_global = hidden_dim + 3
+        input_dim_with_global = hidden_dim + 3 + 1
         #input_dim_with_global = hidden_dim + 3 + 1 + 1 + 8
 
         #activation head (node classification for operators)
