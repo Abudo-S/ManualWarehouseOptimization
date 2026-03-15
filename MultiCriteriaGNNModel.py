@@ -111,8 +111,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #global context (u) has 3 dims: [Alpha, Beta, H_fixed]
         #we concat node_embedding (64) + global (3) + monotonic_id (1) + op_pe (8) = 67 inputs
         #+1 dim: [min_ops_needed]
-        #input_dim_with_global = hidden_dim + 3
-        input_dim_with_global = hidden_dim + 3 + 1 + 1 + 8
+        input_dim_with_global = hidden_dim + 3
+        #input_dim_with_global = hidden_dim + 3 + 1 + 1 + 8
 
         #activation head (node classification for operators)
         self.activation_head = Sequential(
@@ -292,9 +292,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         op_feat_final = torch.cat([
             x_dict['operator'], 
             u_ops, 
-            op_demand_feature.unsqueeze(1),
-            monotonic_id,
-            op_pe #injects explicit id/location logic
+            op_demand_feature.unsqueeze(1)
+            #monotonic_id, #if the model memorizes the monotonic id, it'll cause overfitting in the activation head
+            #op_pe #injects explicit id/location logic
         ], dim=1) 
 
         #apply sigmoid to squash raw logits to [0, 1] probability
@@ -398,8 +398,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         assign_prob_matrix[ord_indices, op_indices] = out_assign.squeeze()
 
         #get activation probs
-        act_probs_1d = out_activation.squeeze().detach() #detach to avoid backpropagation towards activation head 
-        #act_probs_1d = out_activation.squeeze()
+        #act_probs_1d = out_activation.squeeze().detach() #detach to avoid backpropagation towards activation head 
+        act_probs_1d = out_activation.squeeze()
 
         #extract the probability vectors for source (i) and destination (j) orders
         probs_i = assign_prob_matrix[src_idx] #[num_seq_edges, num_ops]
