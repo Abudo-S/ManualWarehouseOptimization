@@ -117,7 +117,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #activation head (node classification for operators)
         self.activation_head = Sequential(
             Linear(input_dim_with_global, hidden_dim),
+            BatchNorm1d(hidden_dim),
             ReLU(),
+            torch.nn.Dropout(self.dropout),
             Linear(hidden_dim, 1) #logits for binary classification
         )
         
@@ -327,22 +329,22 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         if src_monotonic_id.dim() == 1:
             src_monotonic_id = src_monotonic_id.unsqueeze(1)
 
-        # Calculate Order Angle [0, 1] based on geographic coordinates
+        #calculate Order angle [0, 1] based on geographic coordinates
         ord_x_dest = raw_ord_x[dst_idx]
         ord_y_dest = raw_ord_y[dst_idx]
         
-        # Avoid division by zero
+        #avoid division by zero
         max_x = ord_x_dest.max() + 1e-6
         max_y = ord_y_dest.max() + 1e-6
         
         ord_x_norm = ord_x_dest / max_x
         ord_y_norm = ord_y_dest / max_y
         
-        # angle ranges from 0 to pi/2 (since coordinates are positive), dividing by pi/2 normalizes to [0, 1]
+        #angle ranges from 0 to pi/2 (since coordinates are positive), dividing by pi/2 normalizes to [0, 1]
         order_angle = torch.atan2(ord_y_norm, ord_x_norm) / (math.pi / 2)
         
-        # The Affinity Score: How close is the Operator's ID slice to the Order's geographic slice?
-        # Perfect match = 0.0, worst match = 1.0
+        #the affinity acore determines how close is the operator's id slice to the order's geographic slice
+        #perfect match = 0.0, worst match = 1.0
         affinity_score = torch.abs(src_monotonic_id.squeeze() - order_angle).unsqueeze(1)
         
         #concat: [op, order, global, time, op_activation_prob]
@@ -394,11 +396,11 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         op_indices = edge_index_dict[('operator', 'assign', 'order')][0]
         ord_indices = edge_index_dict[('operator', 'assign', 'order')][1]
         
-        #assign_prob_matrix[ord_indices, op_indices] = out_assign.squeeze().detach() #detach to avoid backpropagation from assignment head
+        #assign_prob_matrix[ord_indices, op_indices] = out_assign.squeeze().detach() #detach to avoid backpropagation towards assignment head
         assign_prob_matrix[ord_indices, op_indices] = out_assign.squeeze()
 
         #get activation probs
-        #act_probs_1d = out_activation.squeeze().detach() #detach to avoid backpropagation from activation head 
+        #act_probs_1d = out_activation.squeeze().detach() #detach to avoid backpropagation towards activation head 
         act_probs_1d = out_activation.squeeze()
 
         #extract the probability vectors for source (i) and destination (j) orders
