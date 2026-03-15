@@ -117,9 +117,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #activation head (node classification for operators)
         self.activation_head = Sequential(
             Linear(input_dim_with_global, hidden_dim),
-            BatchNorm1d(hidden_dim),
             ReLU(),
-            torch.nn.Dropout(self.dropout),
             Linear(hidden_dim, 1) #logits for binary classification
         )
         
@@ -318,7 +316,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         u_edges = u[edge_batch_indices] #match batch size for multiple graphs, shape: [num_edges, 3]
         
         #STR- assignment-activation coupling
-        #op_activation_prob = out_activation[src_idx].detach() #detach to avoid backpropagation from activation head
+        #op_activation_prob = out_activation[src_idx].detach() #detach to avoid backpropagation towards activation head
         op_activation_prob = out_activation[src_idx]
         
         #ensure 2d
@@ -400,8 +398,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         assign_prob_matrix[ord_indices, op_indices] = out_assign.squeeze()
 
         #get activation probs
-        #act_probs_1d = out_activation.squeeze().detach() #detach to avoid backpropagation towards activation head 
-        act_probs_1d = out_activation.squeeze()
+        act_probs_1d = out_activation.squeeze().detach() #detach to avoid backpropagation towards activation head 
+        #act_probs_1d = out_activation.squeeze()
 
         #extract the probability vectors for source (i) and destination (j) orders
         probs_i = assign_prob_matrix[src_idx] #[num_seq_edges, num_ops]
