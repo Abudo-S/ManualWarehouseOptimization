@@ -124,8 +124,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #assignment head (edge classification for op i -> order j)
         #input: op_embedding + order_embedding + global + edge_attr (time + base_travel_time) 
         #+ op_activation_prob (predicted by activation head) + monotonic_id (1) + raw_PE (8)
+        #+ affinity_score (1)
         #64 + 64 + 3 + 2 + 1 + 8 = 134
-        input_dim_assignment  = 2 * hidden_dim + 6 + 1 + 8 #added 1 extra dim for op_activation_prob (activation coupling)
+        input_dim_assignment  = 2 * hidden_dim + 6 + 1 + 8 + 1 #added 1 extra dim for op_activation_prob (activation coupling)
         self.assign_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
             Linear(input_dim_assignment , hidden_dim), 
@@ -171,6 +172,14 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         raw_op_features = x_dict['operator']
         op_physical = raw_op_features[:, :7]
         op_pe = raw_op_features[:, 7:]
+
+        raw_op_features = x_dict['operator']
+        op_physical = raw_op_features[:, :7]
+        op_pe = raw_op_features[:, 7:]
+
+        # NEW: Save raw order coordinates (X and Y) before projection
+        raw_ord_x = x_dict['order'][:, 4]
+        raw_ord_y = x_dict['order'][:, 5]
 
         #initial projection
         x_dict['order'] = self.order_lin(x_dict['order']).relu()
@@ -318,6 +327,24 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         if src_monotonic_id.dim() == 1:
             src_monotonic_id = src_monotonic_id.unsqueeze(1)
 
+        # Calculate Order Angle [0, 1] based on geographic coordinates
+        ord_x_dest = raw_ord_x[dst_idx]
+        ord_y_dest = raw_ord_y[dst_idx]
+        
+        # Avoid division by zero
+        max_x = ord_x_dest.max() + 1e-6
+        max_y = ord_y_dest.max() + 1e-6
+        
+        ord_x_norm = ord_x_dest / max_x
+        ord_y_norm = ord_y_dest / max_y
+        
+        # angle ranges from 0 to pi/2 (since coordinates are positive), dividing by pi/2 normalizes to [0, 1]
+        order_angle = torch.atan2(ord_y_norm, ord_x_norm) / (math.pi / 2)
+        
+        # The Affinity Score: How close is the Operator's ID slice to the Order's geographic slice?
+        # Perfect match = 0.0, worst match = 1.0
+        affinity_score = torch.abs(src_monotonic_id.squeeze() - order_angle).unsqueeze(1)
+        
         #concat: [op, order, global, time, op_activation_prob]
         #assign_input = torch.cat([op_emb, ord_emb, u_edges, edge_attr, op_activation_prob], dim=1)
         assign_input = torch.cat([
@@ -327,6 +354,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             edge_attr, 
             op_activation_prob,
             src_monotonic_id,
+            affinity_score,
             op_pe[src_idx] #allows MLP to distinguish perfectly symmetric operators
         ], dim=1)
 
@@ -335,7 +363,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #apply sigmoid to squash raw logits to [0, 1] probability
         out_assign = torch.sigmoid(self.assign_head(assign_input))
 
-        #enforce the sum of probabilities for op 0, op 1, op 2... for a specific order to equal exactly 1.0.
+        #enforce the sum of probabilities of p_assignments for a specific order to equal exactly 1.0.
         #so that the assignment is deterministic for each order
         #out_assign = tg_softmax(self.assign_head(assign_input), dst_idx) 
 
