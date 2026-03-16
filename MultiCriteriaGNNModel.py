@@ -111,12 +111,12 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #global context (u) has 3 dims: [Alpha, Beta, H_fixed]
         #we concat node_embedding (64) + global (3) + op_demand_feature (1) + monotonic_id (1) + op_pe (8) = 67 inputs
         #+1 dim: [min_ops_needed]
-        input_dim_with_global = hidden_dim + 3 + 1
-        #input_dim_with_global = hidden_dim + 3 + 1 + 1 + 8
+        #input_dim_activation = hidden_dim + 3 + 1
+        input_dim_activation = hidden_dim + 3 + 1 + 1 + 8
 
         #activation head (node classification for operators)
         self.activation_head = Sequential(
-            Linear(input_dim_with_global, hidden_dim),
+            Linear(input_dim_activation, hidden_dim),
             ReLU(),
             Linear(hidden_dim, 1) #logits for binary classification
         )
@@ -224,7 +224,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             num_ops_in_graph = mask.sum()
             if num_ops_in_graph > 0:
                 local_ids = torch.arange(num_ops_in_graph, dtype=torch.float, device=x_dict['operator'].device) / num_ops_in_graph
-                monotonic_id[mask, 0] = local_ids
+                monotonic_id[mask, 0] = local_ids / num_ops_in_graph.float() #normalize to [0, 1]
 
         #global context
         #u is [1, 3] (single graph batch). Broadcast to nodes if necessary or just concat.
@@ -292,9 +292,9 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         op_feat_final = torch.cat([
             x_dict['operator'], 
             u_ops, 
-            op_demand_feature.unsqueeze(1)
-            #monotonic_id, #if the model memorizes the monotonic id, it'll cause overfitting in the activation head
-            #op_pe #injects explicit id/location logic
+            op_demand_feature.unsqueeze(1),
+            monotonic_id, #if the model memorizes the monotonic id, it'll cause overfitting in the activation head
+            op_pe #injects explicit id/location logic
         ], dim=1) 
 
         #apply sigmoid to squash raw logits to [0, 1] probability
