@@ -19,7 +19,7 @@ PREPROCESSED_BATCH_DIR = f"./preprocessed/{LARGE_SCALE_BATCH_NAME}/Batch{TARGET_
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
 MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
-FORK_LIFTS_DIR = "./datasets/ForkLifts.csv"
+FORK_LIFTS_DIR = "./datasets/ForkLifts.csv" #50W
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 PREDICTED_SCHEDULE_DIR = f"./predicted_schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
@@ -66,7 +66,7 @@ class ScheduleMinimalityEvaluator:
         
         self.items = []
         
-        #load each predicted schedule and its corresponding optimal schedule, along with their global parameters
+        #load each predicted schedule and its corresponding minimum schedule, along with their global parameters
         for pred_sched_path in all_schedules:
             filename = os.path.basename(pred_sched_path).replace(".json", ".csv")
             alpha, beta, h_fixed = self.parse_filename_params(filename)
@@ -103,7 +103,7 @@ class ScheduleMinimalityEvaluator:
     
     def evaluate_total_flow_time_minimality(self):
         """
-        Evaluates the total_flow_time minimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
+        Evaluates the total_flow_time minimality gap for each predicted batch schedule compared to its corresponding minimum schedule.
         the negative gap means that the predicted schedule is better than minimal schedule (which can never happen),
         but it means that the model has activated more operators than the minimal schedule (so it got a better total_flow_time),
         Minimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
@@ -276,7 +276,7 @@ class ScheduleMinimalityEvaluator:
                 'alpha': alpha,
                 'beta': beta,
                 'h_fixed': h_fixed,
-                'pred_activation': pred_makespan,
+                'pred_makespan': pred_makespan,
                 'min_makespan': min_makespan,
                 'minimality_gap': round(minimality_gap, 4) * 100 #convert to percentage
             })
@@ -285,9 +285,9 @@ class ScheduleMinimalityEvaluator:
 
     def evaluate_combined_minimality(self):
         """
-        Combines makespan and activation optimality gaps using the provided normalized alpha and beta weights per batch,
-        to compute a single combined optimality gap metric for each batch schedule.
-        All optimality gaps are converted to percentages for easier interpretation (e.g. 0.05 becomes 5% gap).
+        Combines makespan and activation minimality gaps using the provided normalized alpha and beta weights per batch,
+        to compute a single combined minimality gap metric for each batch schedule.
+        All minimality gaps are converted to percentages for easier interpretation (e.g. 0.05 becomes 5% gap).
         """
 
         overall_results = []
@@ -410,12 +410,12 @@ class ScheduleMinimalityEvaluator:
 
 if __name__ == "__main__":
     #mini-batch
-    evaluator = ScheduleMinimalityEvaluator(mission_batch_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/batch",
-                                            mission_batch_travel_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/travel",
-                                            predicted_schedule_dir=PREDICTED_SCHEDULE_DIR, 
-                                            is_mini_batch=True)
+    # evaluator = ScheduleMinimalityEvaluator(mission_batch_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/batch",
+    #                                         mission_batch_travel_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/travel",
+    #                                         predicted_schedule_dir=PREDICTED_SCHEDULE_DIR, 
+    #                                         is_mini_batch=True)
     
-    #evaluator = ScheduleMinimalityEvaluator()
+    evaluator = ScheduleMinimalityEvaluator()
     
     total_flow_time_results = evaluator.evaluate_total_flow_time_minimality()
     activation_results = evaluator.evaluate_activation_minimality(total_flow_time_results)
