@@ -20,10 +20,10 @@
                         "finish_time": 20.29,
                         "processing_duration": 10.18,
                         "travel_duration": 10.11,
-                        "successor": 3885514
+                        "successor": 3881017
                     },
                     {
-                        "mission_id": 3885514,
+                        "mission_id": 3881017,
                         "start_time": 30.39,
                         "finish_time": 40.59,
                         "processing_duration": 10.2,
@@ -43,30 +43,38 @@
         },
         {
             "operator_id": 2,
-            "assigned_orders_count": 3,
+            "assigned_orders_count": 4,
             "routes": [
                 [
                     {
-                        "mission_id": 3880680,
-                        "start_time": 0.0,
-                        "finish_time": 10.2,
+                        "mission_id": 3885514,
+                        "start_time": 10.11,
+                        "finish_time": 20.31,
                         "processing_duration": 10.2,
-                        "travel_duration": 0.0,
-                        "successor": 3881017
+                        "travel_duration": 10.11,
+                        "successor": 3880942
                     },
                     {
-                        "mission_id": 3881017,
-                        "start_time": 20.32,
-                        "finish_time": 30.52,
-                        "processing_duration": 10.2,
+                        "mission_id": 3880942,
+                        "start_time": 30.43,
+                        "finish_time": 40.64,
+                        "processing_duration": 10.21,
                         "travel_duration": 10.12,
                         "successor": 3885532
                     },
                     {
                         "mission_id": 3885532,
-                        "start_time": 40.64,
-                        "finish_time": 50.84,
+                        "start_time": 50.76,
+                        "finish_time": 60.96,
                         "processing_duration": 10.2,
+                        "travel_duration": 10.12,
+                        "successor": 3883967
+                    },
+                    {
+                        "mission_id": 3883967,
+                        "start_time": 71.08,
+                        "finish_time": 81.29,
+                        "processing_duration": 10.21,
                         "travel_duration": 10.12,
                         "successor": null
                     }
@@ -75,29 +83,21 @@
         },
         {
             "operator_id": 3,
-            "assigned_orders_count": 3,
+            "assigned_orders_count": 2,
             "routes": [
                 [
                     {
-                        "mission_id": 3880942,
-                        "start_time": 0.0,
-                        "finish_time": 10.21,
-                        "processing_duration": 10.21,
-                        "travel_duration": 0.0,
-                        "successor": 3883967
-                    },
-                    {
-                        "mission_id": 3883967,
-                        "start_time": 20.34,
-                        "finish_time": 30.55,
-                        "processing_duration": 10.21,
-                        "travel_duration": 10.13,
+                        "mission_id": 3880680,
+                        "start_time": 10.11,
+                        "finish_time": 20.31,
+                        "processing_duration": 10.2,
+                        "travel_duration": 10.11,
                         "successor": 3885773
                     },
                     {
                         "mission_id": 3885773,
-                        "start_time": 40.67,
-                        "finish_time": 50.87,
+                        "start_time": 30.43,
+                        "finish_time": 40.63,
                         "processing_duration": 10.2,
                         "travel_duration": 10.12,
                         "successor": null

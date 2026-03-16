@@ -1,0 +1,60 @@
+{
+    "metadata": {
+        "num_orders": 5,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": "schedule10M_140_A1.0_B1000.0_H120",
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 5,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3894444,
+                        "start_time": 0.0,
+                        "finish_time": 10.393333733081818,
+                        "processing_duration": 10.393333733081818,
+                        "travel_duration": 0.0,
+                        "successor": 3887754
+                    },
+                    {
+                        "mission_id": 3887754,
+                        "start_time": 20.68,
+                        "finish_time": 31.03,
+                        "processing_duration": 10.34,
+                        "travel_duration": 10.29,
+                        "successor": 3886620
+                    },
+                    {
+                        "mission_id": 3886620,
+                        "start_time": 31.03,
+                        "finish_time": 41.35,
+                        "processing_duration": 10.32,
+                        "travel_duration": 0.0,
+                        "successor": 3890207
+                    },
+                    {
+                        "mission_id": 3890207,
+                        "start_time": 41.35,
+                        "finish_time": 51.79,
+                        "processing_duration": 10.44,
+                        "travel_duration": 0.0,
+                        "successor": 3894469
+                    },
+                    {
+                        "mission_id": 3894469,
+                        "start_time": 51.79,
+                        "finish_time": 62.23,
+                        "processing_duration": 10.44,
+                        "travel_duration": 0.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}

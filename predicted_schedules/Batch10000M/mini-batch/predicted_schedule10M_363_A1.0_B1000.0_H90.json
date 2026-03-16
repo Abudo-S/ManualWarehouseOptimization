@@ -11,11 +11,11 @@
     "operators": [
         {
             "operator_id": 1,
-            "assigned_orders_count": 3,
+            "assigned_orders_count": 2,
             "routes": [
                 [
                     {
-                        "mission_id": 3881899,
+                        "mission_id": 3885002,
                         "start_time": 11.27,
                         "finish_time": 22.89,
                         "processing_duration": 11.62,
@@ -28,14 +28,6 @@
                         "finish_time": 45.9,
                         "processing_duration": 11.74,
                         "travel_duration": 11.27,
-                        "successor": 3885002
-                    },
-                    {
-                        "mission_id": 3885002,
-                        "start_time": 57.16,
-                        "finish_time": 68.78,
-                        "processing_duration": 11.62,
-                        "travel_duration": 11.27,
                         "successor": null
                     }
                 ]
@@ -43,15 +35,23 @@
         },
         {
             "operator_id": 2,
-            "assigned_orders_count": 1,
+            "assigned_orders_count": 2,
             "routes": [
                 [
                     {
                         "mission_id": 3889531,
-                        "start_time": 0.0,
-                        "finish_time": 11.62,
+                        "start_time": 11.27,
+                        "finish_time": 22.89,
                         "processing_duration": 11.62,
-                        "travel_duration": 0.0,
+                        "travel_duration": 11.27,
+                        "successor": 3881899
+                    },
+                    {
+                        "mission_id": 3881899,
+                        "start_time": 34.16,
+                        "finish_time": 45.78,
+                        "processing_duration": 11.62,
+                        "travel_duration": 11.27,
                         "successor": null
                     }
                 ]

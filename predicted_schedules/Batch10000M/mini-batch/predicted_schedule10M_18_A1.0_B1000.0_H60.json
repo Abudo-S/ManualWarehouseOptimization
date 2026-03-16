@@ -1,0 +1,53 @@
+{
+    "metadata": {
+        "num_orders": 3,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": "schedule10M_18_A1.0_B1000.0_H60",
+        "unassigned_orders": 0,
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3881114,
+                        "start_time": 10.32,
+                        "finish_time": 20.7,
+                        "processing_duration": 10.38,
+                        "travel_duration": 10.32,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 2,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3881330,
+                        "start_time": 10.32,
+                        "finish_time": 20.66,
+                        "processing_duration": 10.34,
+                        "travel_duration": 10.32,
+                        "successor": 3881335
+                    },
+                    {
+                        "mission_id": 3881335,
+                        "start_time": 30.96,
+                        "finish_time": 41.3,
+                        "processing_duration": 10.34,
+                        "travel_duration": 10.3,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}
