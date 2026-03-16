@@ -93,7 +93,8 @@ class ScheduleEvaluator:
                       act_loss_weight=1.0,
                       assign_loss_weight=1.0,
                       seq_loss_weight=1.0,
-                      capacity_penalty_weight=1.5):
+                      capacity_penalty_weight=1.5,
+                      heuristic_boost_factor=1.15):
         """
         computes weighted BCE loss for activation, assignment, and sequence heads.
         total Loss = beta * act_loss + alpha * (assign_loss + seq_loss) + capacity_penalty
@@ -126,31 +127,33 @@ class ScheduleEvaluator:
         
         # #capacity penalty: penalizes the model if expected workload of an operator exceeds h_fixed
         
-        # p_assign_flat = pred_assign.squeeze() #[num_edges]
-        # src_idx = ground_truth['operator', 'assign', 'order'].edge_index[0] #source operator indices
-        # proc_times = ground_truth['operator', 'assign', 'order'].edge_attr[:, 0] #processing times
+        p_assign_flat = pred_assign.squeeze() #[num_edges]
+        src_idx = ground_truth['operator', 'assign', 'order'].edge_index[0] #source operator indices
+        proc_times = ground_truth['operator', 'assign', 'order'].edge_attr[:, 0] #processing times
         
-        # #calculate expected workload per operator: sum(p_assign * processing_time)
-        # num_ops_total = ground_truth['operator'].x.size(0)
-        # expected_workloads = torch.zeros(num_ops_total, device=pred_assign.device)
-        # expected_workloads.scatter_add_(0, src_idx, p_assign_flat * proc_times) #not fully accurate since it doesn't consider travel time
+        #calculate expected workload per operator: sum(p_assign * processing_time)
+        num_ops_total = ground_truth['operator'].x.size(0)
+        expected_workloads = torch.zeros(num_ops_total, device=pred_assign.device)
 
-        # #get h_fixed per operator
-        # #since u is [batch_size, 3] and h_fixed is at index 2
-        # op_batch = ground_truth['operator'].batch if hasattr(ground_truth['operator'], 'batch') else torch.zeros(num_ops_total, dtype=torch.long, device=pred_assign.device)
-        # h_fixed_per_op = ground_truth.u[op_batch, 2]
+        #not fully accurate since it doesn't consider the exact travel time
+        expected_workloads.scatter_add_(0, src_idx, p_assign_flat * proc_times * heuristic_boost_factor)
 
-        # #penalize workload that exceeds H_fixed using relu (0 if workload < h_fixed)
-        # capacity_violations = torch.relu(expected_workloads - h_fixed_per_op)
-        # capacity_penalty = capacity_violations.mean()
+        #get h_fixed per operator
+        #since u is [batch_size, 3] and h_fixed is at index 2
+        op_batch = ground_truth['operator'].batch if hasattr(ground_truth['operator'], 'batch') else torch.zeros(num_ops_total, dtype=torch.long, device=pred_assign.device)
+        h_fixed_per_op = ground_truth.u[op_batch, 2]
+
+        #penalize workload that exceeds H_fixed using relu (0 if workload < h_fixed)
+        capacity_violations = torch.relu(expected_workloads - h_fixed_per_op)
+        capacity_penalty = capacity_violations.mean()
 
         #weighted sum
         #Note that alpha/beta need to be scaled down if they are large (e.g. 100) to prevent explosion
         #or rely on the optimizer (Adam) to handle scaling.
         #total_loss = (beta * loss_act) + (alpha * (loss_assign + loss_seq))
         total_loss = (beta * (act_loss_weight * loss_act)) + \
-                     (alpha * ((assign_loss_weight * loss_assign) + (seq_loss_weight * loss_seq)))
-                     #(capacity_penalty_weight * capacity_penalty)
+                     (alpha * ((assign_loss_weight * loss_assign) + (seq_loss_weight * loss_seq))) + \
+                     (capacity_penalty_weight * capacity_penalty)
         
         #avoid division by zero
         #sum_weights = alpha + beta + 1e-6
