@@ -143,17 +143,29 @@ class ScheduleEvaluator:
         op_batch = ground_truth['operator'].batch if hasattr(ground_truth['operator'], 'batch') else torch.zeros(num_ops_total, dtype=torch.long, device=pred_assign.device)
         h_fixed_per_op = ground_truth.u[op_batch, 2]
 
-        #penalize workload that exceeds H_fixed using relu (0 if workload < h_fixed)
+        #penalize workload that exceeds h_fixed using relu (0 if workload < h_fixed)
         capacity_violations = torch.relu(expected_workloads - h_fixed_per_op)
-        capacity_penalty = capacity_violations.mean()
+
+        #only average the penalty over operators that exceed capacity
+        active_violations = capacity_violations > 0
+        if active_violations.sum() > 0:
+            capacity_penalty = capacity_violations.sum() / active_violations.sum()
+        else:
+            capacity_penalty = torch.tensor(0.0, device=pred_assign.device)
 
         #weighted sum
         #Note that alpha/beta need to be scaled down if they are large (e.g. 100) to prevent explosion
         #or rely on the optimizer (Adam) to handle scaling.
         #total_loss = (beta * loss_act) + (alpha * (loss_assign + loss_seq))
-        total_loss = (beta * (act_loss_weight * loss_act)) + \
-                     (alpha * ((assign_loss_weight * loss_assign) + (seq_loss_weight * loss_seq))) + \
-                     (capacity_penalty_weight * capacity_penalty)
+        # total_loss = (beta * (act_loss_weight * loss_act)) + \
+        #              (alpha * ((assign_loss_weight * loss_assign) + (seq_loss_weight * loss_seq))) + \
+        #              (capacity_penalty_weight * capacity_penalty)
+
+        #multiplying by alpha and beta causes gradient vanishing for heads affected by the lower weight (alpha or beta)
+        total_loss = (act_loss_weight * loss_act) + \
+             (assign_loss_weight * loss_assign) + \
+             (seq_loss_weight * loss_seq) + \
+             (capacity_penalty_weight * capacity_penalty)
         
         #avoid division by zero
         #sum_weights = alpha + beta + 1e-6
