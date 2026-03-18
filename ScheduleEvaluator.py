@@ -1,4 +1,5 @@
 import torch
+import random
 import torch.nn as nn
 from sklearn.metrics import confusion_matrix, accuracy_score
 from sklearn.metrics import precision_score, recall_score, f1_score
@@ -14,6 +15,7 @@ from multiprocessing import cpu_count
 
 TRAINING_SET_SIZE_PERCENT = 0.85
 NO_CUDA = False
+NUM_AUGMENTATIONS = 3 #number of new spatially augmented copies to make per original graph
 
 #default threshold for binary classification accurcy like logistic regression after sigmoid
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
@@ -27,7 +29,9 @@ class ScheduleEvaluator:
                  act_threshold=CLASSIFICATION_THRESHOLD,
                  assign_threshold=CLASSIFICATION_THRESHOLD,
                  seq_threshold=CLASSIFICATION_THRESHOLD,
-                 split_train_validation=True):
+                 split_train_validation=True,
+                 use_spatial_augmentation=True,
+                 n_spatial_augmentations_per_graph=NUM_AUGMENTATIONS):
         """
         Initializes the ScheduleEvaluator with the model, dataset, and evaluation parameters.
         Args:
@@ -47,6 +51,8 @@ class ScheduleEvaluator:
         self.act_threshold = act_threshold
         self.assign_threshold = assign_threshold
         self.seq_threshold = seq_threshold
+        self.use_spatial_augmentation = use_spatial_augmentation
+        self.n_spatial_augmentations_per_graph = n_spatial_augmentations_per_graph
 
         self.device = torch.device('cuda' if torch.cuda.is_available() and not NO_CUDA else 'cpu')
         self.model.to(self.device)
@@ -58,8 +64,12 @@ class ScheduleEvaluator:
 
         if split_train_validation:
             self._split_datasets()
-        else:
+        else: #test set
             self.schedule_val_dataset = schedule_dataset
+
+        if use_spatial_augmentation and split_train_validation:
+            self.schedule_train_dataset = self.augment_dataset(self.schedule_train_dataset)
+        
 
     def _split_datasets(self):
         '''
@@ -85,7 +95,89 @@ class ScheduleEvaluator:
             #save splitted datasets for future evaluation
             self.schedule_train_dataset = train_set
             self.schedule_val_dataset = val_set
+
+    def augment_dataset(self, schedule_dataset):
+        expanded_train_dataset = []
+
+        print(f"Expanding dataset from {len(schedule_dataset)} examples...")
+
+        for i in range(len(schedule_dataset)):
+            original_data = schedule_dataset[i]
+            
+            #add the unaltered original graph to our new dataset
+            expanded_train_dataset.append(original_data)
+            
+            #generate and add the augmented copies
+            for _ in range(self.n_spatial_augmentations_per_graph):
+                augmented_data = self.augment_single_graph(original_data)
+                expanded_train_dataset.append(augmented_data)
+
+        print(f"Expansion complete! New training dataset size: {len(expanded_train_dataset)}")
+
+        return expanded_train_dataset
+
+    def augment_dataset(self, schedule_dataset):
+        expanded_train_dataset = []
+
+        print(f"Expanding dataset from {len(schedule_dataset)} examples...")
+
+        for i in range(len(schedule_dataset)):
+            original_data = schedule_dataset[i]
+            
+            #add the unaltered original graph to our new dataset
+            expanded_train_dataset.append(original_data)
+            
+            #generate and add the augmented copies
+            for _ in range(self.n_spatial_augmentations_per_graph):
+                augmented_data = self.augment_single_graph(original_data)
+                expanded_train_dataset.append(augmented_data)
+
+        print(f"Expansion complete! New training dataset size: {len(expanded_train_dataset)}")
+
+        return expanded_train_dataset
+    
+
+    def augment_single_graph(self, data):
+        """
+        Takes a single HeteroData graph, clones it, and applies spatial augmentations (translation, mirroring and rotation)..
+        Perserving physical distance between nodes.
+        Expects order features where indices 4-9 are: FROM_X, FROM_Y, FROM_Z, TO_X, TO_Y, TO_Z
+        """
+        aug_data = data.clone()
         
+        #flip x-axis randomly (50% chance)
+        if random.random() > 0.5:
+            aug_data['order'].x[:, 4] = -aug_data['order'].x[:, 4] #FROM_X
+            aug_data['order'].x[:, 7] = -aug_data['order'].x[:, 7] #TO_X
+
+        #flip y-axis randomly (50% chance)
+        if random.random() > 0.5:
+            aug_data['order'].x[:, 5] = -aug_data['order'].x[:, 5] #FROM_Y
+            aug_data['order'].x[:, 8] = -aug_data['order'].x[:, 8] #TO_Y
+
+        #random Translation (shift coordinates)
+        shift_x = random.uniform(-20.0, 20.0)
+        shift_y = random.uniform(-20.0, 20.0)
+        
+        aug_data['order'].x[:, 4] += shift_x #FROM_X
+        aug_data['order'].x[:, 7] += shift_x #TO_X
+        
+        aug_data['order'].x[:, 5] += shift_y #FROM_Y
+        aug_data['order'].x[:, 8] += shift_y #TO_Y
+        
+        #swap x and y axes randomly
+        if random.random() > 0.5:
+            temp_from_x = aug_data['order'].x[:, 4].clone()
+            aug_data['order'].x[:, 4] = aug_data['order'].x[:, 5]
+            aug_data['order'].x[:, 5] = temp_from_x
+            
+            temp_to_x = aug_data['order'].x[:, 7].clone()
+            aug_data['order'].x[:, 7] = aug_data['order'].x[:, 8]
+            aug_data['order'].x[:, 8] = temp_to_x
+
+        return aug_data
+
+
     def weighted_loss(self, 
                       predictions, 
                       ground_truth, 
