@@ -126,7 +126,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #+ op_activation_prob (predicted by activation head) + monotonic_id (1) + raw_PE (8)
         #+ affinity_score (1)
         #64 + 64 + 3 + 2 + 1 + 8 = 134
-        input_dim_assignment  = 2 * hidden_dim + 6 + 1 + 8 + 1 #added 1 extra dim for op_activation_prob (activation coupling)
+        #input_dim_assignment  = 2 * hidden_dim + 6 + 1 + 8 + 1 #added 1 extra dim for op_activation_prob (activation coupling)
+        input_dim_assignment  = 2 * hidden_dim + 6 + 1 + 8 #added 1 extra dim for op_activation_prob (activation coupling)
         self.assign_head = Sequential(
             #Linear(2 * hidden_dim + 3 + 1, hidden_dim), #decoupled head without activation feedback
             Linear(input_dim_assignment , hidden_dim), 
@@ -353,7 +354,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
             u_edges, 
             edge_attr, 
             op_activation_prob,
-            src_monotonic_id,
+            #src_monotonic_id,  #removed to prevent exploitation of the first operator
             affinity_score,
             op_pe[src_idx] #allows MLP to distinguish perfectly symmetric operators
         ], dim=1)
