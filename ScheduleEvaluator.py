@@ -201,21 +201,21 @@ class ScheduleEvaluator:
         
         #original
         orig = original_batch.clone()
-        orig.variant_name = f"Batch {batch_id}: original"
+        orig.schedule_id = f"{original_batch.schedule_id}"
         test_suite.append(orig)
         
         #flip x-axis
         flip_x = original_batch.clone()
         flip_x['order'].x[:, 4] = -flip_x['order'].x[:, 4]
         flip_x['order'].x[:, 7] = -flip_x['order'].x[:, 7]
-        flip_x.variant_name = f"Batch {batch_id}: flipped x-axis"
+        flip_x.schedule_id = f"{original_batch.schedule_id}_aug_flipped_x-axis"
         test_suite.append(flip_x)
 
         #flip y-axis
         flip_y = original_batch.clone()
         flip_y['order'].x[:, 5] = -flip_y['order'].x[:, 5]
         flip_y['order'].x[:, 8] = -flip_y['order'].x[:, 8]
-        flip_y.variant_name = f"Batch {batch_id}: flipped y-axis"
+        flip_y.schedule_id = f"{original_batch.schedule_id}_aug_flipped_y-axis"
         test_suite.append(flip_y)
 
         #swap x and y (equivalent to a diagonal flip / 90-degree rotation shift)
@@ -226,18 +226,18 @@ class ScheduleEvaluator:
         temp_to_x = swap_xy['order'].x[:, 7].clone()
         swap_xy['order'].x[:, 7] = swap_xy['order'].x[:, 8]
         swap_xy['order'].x[:, 8] = temp_to_x
-        swap_xy.variant_name = f"Batch {batch_id}: swapped x & y"
+        swap_xy.schedule_id = f"{original_batch.schedule_id}_aug_swapped_x&y"
         test_suite.append(swap_xy)
 
         #define a set of specific translations (shifts)
-        #adjust these numbers based on the scale of your warehouse map (e.g., meters)
+        #adjust these numbers based on the scale of warehouse map (e.g., meters)
         shifts = [
-            ("Shifted +20X, +20Y", 20.0, 20.0),
-            ("Shifted -20X, -20Y", -20.0, -20.0),
-            ("Shifted +50X, -50Y", 50.0, -50.0),
-            ("Shifted -50X, +50Y", -50.0, 50.0),
-            ("Extreme shift +200X", 200.0, 0.0),
-            ("Extreme shift +200Y", 0.0, 200.0)
+            (f"{original_batch.schedule_id}_aug_shifted_+20X_+20Y", 20.0, 20.0),
+            (f"{original_batch.schedule_id}_aug_shifted_-20X_-20Y", -20.0, -20.0),
+            (f"{original_batch.schedule_id}_aug_shifted_+50X_-50Y", 50.0, -50.0),
+            (f"{original_batch.schedule_id}_aug_shifted_-50X_+50Y", -50.0, 50.0),
+            (f"{original_batch.schedule_id}_aug_extreme_shift+200X", 200.0, 0.0),
+            (f"{original_batch.schedule_id}_aug_extreme_shift+200Y", 0.0, 200.0)
         ]
 
         for name, shift_x, shift_y in shifts:
@@ -246,7 +246,7 @@ class ScheduleEvaluator:
             shifted['order'].x[:, 7] += shift_x #TO_X
             shifted['order'].x[:, 5] += shift_y #FROM_Y
             shifted['order'].x[:, 8] += shift_y #TO_Y
-            shifted.variant_name = f"Batch {batch_id}: {name}"
+            shifted.schedule_id = f"{name}"
             test_suite.append(shifted)
 
         return test_suite
