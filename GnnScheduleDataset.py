@@ -4,6 +4,7 @@ from torch_geometric.loader import DataLoader
 import os
 import glob
 import re
+import random
 from GnnDataInstanceBuilder import GnnDataInstanceBuilder
 from MultiCriteriaGNNModel import MultiCriteriaGNNModel
 
@@ -118,6 +119,50 @@ class GnnScheduleDataset(Dataset):
         )
         
         return data
+    import torch
+
+    def apply_spatial_augmentation(self, batch):
+        """
+        Applies distance-preserving spatial augmentations to order coordinates (translation, mirroring and rotation).
+        Expects order features where indices 4-9 are: FROM_X, FROM_Y, FROM_Z, TO_X, TO_Y, TO_Z.
+        It could be using inside the training loop to change a single batch.
+        """
+        #flip x-axis randomly (50% chance)
+        if random.random() > 0.5:
+            #assuming origin is 0, we can just invert the sign
+            batch['order'].x[:, 4] = -batch['order'].x[:, 4] #FROM_X
+            batch['order'].x[:, 7] = -batch['order'].x[:, 7] #TO_X
+
+        #flip y-axis randomly (50% chance)
+        if random.random() > 0.5:
+            batch['order'].x[:, 5] = -batch['order'].x[:, 5] #FROM_Y
+            batch['order'].x[:, 8] = -batch['order'].x[:, 8] #TO_Y
+
+        #random translation (shift coordinates by a random offset)
+        #shift the whole layout between -20 and +20 units
+        shift_x = random.uniform(-20.0, 20.0)
+        shift_y = random.uniform(-20.0, 20.0)
+        
+        batch['order'].x[:, 4] += shift_x #FROM_X
+        batch['order'].x[:, 7] += shift_x #TO_X
+        
+        batch['order'].x[:, 5] += shift_y #FROM_Y
+        batch['order'].x[:, 8] += shift_y #TO_Y
+        
+        #swap x and y axes randomly (90-degree diagonal rotation equivalent)
+        if random.random() > 0.5:
+            #swap FROM_X and FROM_Y
+            temp_from_x = batch['order'].x[:, 4].clone()
+            batch['order'].x[:, 4] = batch['order'].x[:, 5]
+            batch['order'].x[:, 5] = temp_from_x
+            
+            #swap TO_X and TO_Y
+            temp_to_x = batch['order'].x[:, 7].clone()
+            batch['order'].x[:, 7] = batch['order'].x[:, 8]
+            batch['order'].x[:, 8] = temp_to_x
+
+        return batch
+
 
 if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
