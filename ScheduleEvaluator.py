@@ -15,7 +15,7 @@ from multiprocessing import cpu_count
 
 TRAINING_SET_SIZE_PERCENT = 0.85
 NO_CUDA = False
-NUM_AUGMENTATIONS = 3 #number of new spatially augmented copies to make per original graph
+NUM_AUGMENTATIONS = 4 #number of new spatially augmented copies to make per original graph
 
 #default threshold for binary classification accurcy like logistic regression after sigmoid
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
@@ -101,7 +101,7 @@ class ScheduleEvaluator:
     def augment_dataset(self, schedule_dataset):
         expanded_train_dataset = []
 
-        print(f"Expanding dataset from {len(schedule_dataset)} examples...")
+        print(f"Augmenting dataset from {len(schedule_dataset)} examples...")
 
         for i in range(len(schedule_dataset)):
             original_data = schedule_dataset[i]
@@ -114,14 +114,14 @@ class ScheduleEvaluator:
                 augmented_data = self.augment_single_graph(original_data)
                 expanded_train_dataset.append(augmented_data)
 
-        print(f"Expansion complete! New training dataset size: {len(expanded_train_dataset)}")
+        print(f"Augmentation complete! New training dataset size: {len(expanded_train_dataset)}")
 
         return expanded_train_dataset
 
     def augment_dataset(self, schedule_dataset):
         expanded_train_dataset = []
 
-        print(f"Expanding dataset from {len(schedule_dataset)} examples...")
+        print(f"Augmenting dataset from {len(schedule_dataset)} examples...")
 
         for i in range(len(schedule_dataset)):
             original_data = schedule_dataset[i]
@@ -134,7 +134,7 @@ class ScheduleEvaluator:
                 augmented_data = self.augment_single_graph(original_data)
                 expanded_train_dataset.append(augmented_data)
 
-        print(f"Expansion complete! New training dataset size: {len(expanded_train_dataset)}")
+        print(f"Augmentation complete! New training dataset size: {len(expanded_train_dataset)}")
 
         return expanded_train_dataset
     
