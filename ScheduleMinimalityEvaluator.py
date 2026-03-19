@@ -61,7 +61,7 @@ class ScheduleMinimalityEvaluator:
 
         #discover all predicted_schedule files
         #pattern: schedule..._1_A...B...H...0.json
-        search_pattern = os.path.join(predicted_schedule_dir, "predicted_schedule*0.json")
+        search_pattern = os.path.join(predicted_schedule_dir, "predicted_schedule*.json")
         all_schedules = sorted(glob.glob(search_pattern))
         
         self.items = []
@@ -76,7 +76,9 @@ class ScheduleMinimalityEvaluator:
             if match:
                 batch_num = match.group(1)
 
-            filename = filename.replace('predicted_schedule', 'Batch')
+            filename = filename.replace('.csv', '')
+            filename = filename.split('_aug')[0] #exclude augmentation suffix
+            filename = filename.replace('predicted_schedule', 'Batch') + '.csv'
 
             if is_mini_batch:
                 filename = filename.split('_A')[0].replace('_', '_distanced_')
