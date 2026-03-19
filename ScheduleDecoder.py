@@ -5,7 +5,9 @@ import pandas as pd
 import os
 import math
 import itertools
+import time
 import json
+import logging
 from sklearn.metrics import precision_recall_curve
 from sklearn.model_selection import KFold
 from scipy.optimize import linear_sum_assignment
@@ -30,6 +32,11 @@ FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 PREDICTED_SCHEDULE_DIR = f"./predicted_schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 PREDICTED_LARGE_SCHEDULE_DIR = f"./predicted_schedules/large-scale/batch/"
+#used to compare model confidence in one-shot decoded predictions
+#tail insertions are orders that have probs under fixed thresholds, need to refined.
+MINI_BATCH_TAIL_INSERTIONS_DIR = f"./tail_insertions/validation_mini-batches.json"
+LARGE_BATCH_TAIL_INSERTIONS_DIR = f"./tail_insertions/test_large-batches.json"
+
 BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch instances
 H_FIXED_EXCEED_TOLERANCE_MIN = 0.0 #allow schedules to tolerate H_fixed exceedance 
 MAX_ITERATIONS_PER_ORDER = 10 #max attempts to find a feasible operator for an order based on assignment probs (in iterative repair)
@@ -38,11 +45,18 @@ MAX_ITERATIONS_PER_ORDER = 10 #max attempts to find a feasible operator for an o
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
 CLASSIFICATION_THRESHOLD = 0.05
 
+logging.basicConfig(
+    filename=f'logs/schedule_decoder_{int(time.time())}.log', 
+    filemode='w',
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 def colored_background_str(r, g, b, text):
     return f'\033[48;2;{r};{g};{b}m{text}\033[0m'
 
 class ScheduleDecoder:
     batch_tail_insertions = {}
+    batch_tail_insertions_with_new_activations = {}
     
     def __init__(self, 
                  act_threshold=CLASSIFICATION_THRESHOLD, 
@@ -281,8 +295,9 @@ class ScheduleDecoder:
 
         #decode activations (thresholding)
         chosen_act = (out['activation'].view(-1) > self.act_threshold)
-        print(f"Activation Probabilities (sample - top 10): {out['activation'].view(-1)[:10].cpu().detach().numpy()}")
-
+        print(f"Activation Probabilities (sample): {out['activation'].view(-1).cpu().detach().numpy()}")
+        logging.info(f"Activation Probabilities (sample): {out['activation'].view(-1).cpu().detach().numpy()}")
+        
         #feasibility checks
         #activation consistency
         act_ok, act_stats = self.check_activation_feasibility(batch, chosen_act, chosen_assign)
@@ -1073,7 +1088,7 @@ class ScheduleDecoder:
         """
         global_time_scale = 1.0
         if hasattr(batch, 'global_scale_factor'):
-             #take mean or first if batched
+            #take mean or first if batched
             global_time_scale = batch.global_scale_factor.mean().item()
 
         if not hasattr(batch, 'u') or batch.u is None:
@@ -1091,12 +1106,19 @@ class ScheduleDecoder:
         assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')].cpu().numpy()
         seq_idx = batch.edge_index_dict[('order', 'to', 'order')].cpu().numpy()
 
-        #processing time (op -> order): (op_idx, order_idx) -> p time
+        #processing time and base travel time (op -> order)
         proc_time_map = {}
+        base_travel_map = {}
         assign_attr = batch.edge_attr_dict[('operator', 'assign', 'order')].cpu().numpy()
         for i in range(assign_idx.shape[1]):
-            val = float(assign_attr[i][0]) if assign_attr.ndim > 1 else float(assign_attr[i])
-            proc_time_map[(assign_idx[0, i], assign_idx[1, i])] = val * global_time_scale
+            val_proc = float(assign_attr[i][0]) if assign_attr.ndim > 1 else float(assign_attr[i])
+            val_travel = float(assign_attr[i][1]) if assign_attr.ndim > 1 and assign_attr.shape[1] > 1 else 0.0
+            
+            op = int(assign_idx[0, i])
+            order = int(assign_idx[1, i])
+            
+            proc_time_map[(op, order)] = val_proc * global_time_scale
+            base_travel_map[(op, order)] = val_travel * global_time_scale
 
         travel_time_map = {}
         seq_attr = batch.edge_attr_dict[('order', 'to', 'order')].cpu().numpy()
@@ -1104,7 +1126,7 @@ class ScheduleDecoder:
             val = float(seq_attr[i][0]) if seq_attr.ndim > 1 else float(seq_attr[i])
             #travel_time_map[(seq_idx[0, i], seq_idx[1, i])] = val * global_time_scale
             travel_time_map[(int(seq_idx[0, i]), int(seq_idx[1, i]))] = val * global_time_scale
-        
+
         if travel_time_map:
             avg_travel_time = sum(travel_time_map.values()) / len(travel_time_map)
             if avg_travel_time == 0: #safety guard in case scaling is broken
@@ -1129,11 +1151,11 @@ class ScheduleDecoder:
 
         #STR- activation
         active_ops = set(np.where(p_act >= self.act_threshold)[0])
-        
+
         if use_extra_ops:
             inactive_ops = [op for op in range(num_ops) if op not in active_ops]
-            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x])[:n_extra_ops_to_use]
-
+            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
+            
             for best_inactive_op in best_inactive_ops:
                 active_ops.add(best_inactive_op)
 
@@ -1141,188 +1163,144 @@ class ScheduleDecoder:
             k = max(1, int(num_ops * 0.3))
             active_ops = set(np.argsort(p_act)[-k:].tolist())
 
-
         total_processing_time = 0.0
         #estimate total workload (average processing time across all possible valid assignments)
         for o in range(num_orders):
             avg_proc = np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
             total_processing_time += avg_proc
-        
-        # #estimate total active capacity
-        # total_active_capacity = len(active_ops) * h_fixed_mins
-        
-        # #force activate more operators if mathematically impossible to fit
-        # while total_processing_time > total_active_capacity and len(active_ops) < num_ops:
-        #     #find the best inactive operator and activate them
-        #     inactive_ops = [op for op in range(num_ops) if op not in active_ops]
-        #     best_inactive = max(inactive_ops, key=lambda x: p_act[x])
-        #     active_ops.add(best_inactive)
-        #     total_active_capacity = len(active_ops) * h_fixed_mins
-        #     print(f"Warning: Forced activation of Op {best_inactive} due to H_fixed capacity constraints.")
+            
+        #STR- global Assignment
 
-        #preference for the finalized active_ops
-        order_preferences = {o: [] for o in range(num_orders)}
-        temp_prefs = {o: {} for o in range(num_orders)} 
-        
+        #group candidates by strict probability buckets (quantized to 3 decimals)
+        def get_bucket(prob): return round(float(prob), 3)
+
+        #order_preferences[o] = dict mapping bucket -> list of valid operator candidates
+        order_preferences = {o: {} for o in range(num_orders)}
         for i in range(p_assign.shape[0]):
             op = int(assign_idx[0, i])
             order = int(assign_idx[1, i])
             prob = float(p_assign[i])
-            
-            #consider only operators in the finalized active_ops set
-            if op in active_ops and prob > 0.001: 
-                prob_key = round(prob, 4) 
-                if prob_key not in temp_prefs[order]: 
-                    temp_prefs[order][prob_key] = []
-                temp_prefs[order][prob_key].append(op)
+            if prob > 0.001:
+                b = get_bucket(prob)
+                if b not in order_preferences[order]:
+                    order_preferences[order][b] = []
+                order_preferences[order][b].append(op)
 
-        #format buckets and ensure no order is left without options
-        for o in range(num_orders):
-            groups = temp_prefs[o]
-            seen_ops = set()
-
-            if groups:
-                sorted_probs = sorted(groups.keys(), reverse=True)
-                for p in sorted_probs:
-                    order_preferences[o].append({'prob': p, 'ops': groups[p]})
-                    seen_ops.update(groups[p])
-            
-            #fallback only to active ops that the assignment head missed
-            missing_active = [op for op in active_ops if op not in seen_ops]
-            if missing_active:
-                #sort missing active ops by their activation probability
-                missing_active.sort(key=lambda x: p_act[x], reverse=True)
-                order_preferences[o].append({'prob': 0.0001, 'ops': missing_active})
-
-        #STR- iterative assignment & sequence routing
-        order_bucket_idx = {o: 0 for o in range(num_orders)}
+        #order_bucket_state[o] tracks which sorted bucket index we are currently trying
+        order_bucket_state = {o: 0 for o in range(num_orders)}
+        #order_tried_ops[o] tracks specific operators already tried for order o
         order_tried_ops = {o: set() for o in range(num_orders)}
+        
+        #pre-sort buckets descending for each order
+        order_sorted_buckets = {}
+        for o in range(num_orders):
+            order_sorted_buckets[o] = sorted(order_preferences[o].keys(), reverse=True)
+            #fallback bucket for ops not explicitly predicted (prob 0.0)
+            all_ops = list(range(num_ops))
+            seen = set(op for ops in order_preferences[o].values() for op in ops)
+            unseen = [op for op in all_ops if op not in seen]
+            if unseen:
+                order_preferences[o][0.0] = unseen
+                order_sorted_buckets[o].append(0.0)
+
         orders_to_assign = set(range(num_orders))
-        
-        # initialize for all operators, so inactive ops can receive orders if second fallback triggers
-        final_op_routes = {op: [] for op in range(num_ops)} 
-        
-        MAX_ITERATIONS = num_orders * num_ops 
+        final_op_routes = {op: [] for op in range(num_ops)} #op -> list of steps
+
+        MAX_ITERATIONS = num_orders * num_ops
         iteration = 0
-        
-        # HEURISTIC: Calculate soft max capacity per operator to enforce balancing
-        # Add 50% buffer to allow some operators to take slightly more if mathematically optimal
-        num_active = max(1, len(active_ops))
-        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 1.5))
 
         while orders_to_assign and iteration < MAX_ITERATIONS:
             iteration += 1
-            current_clusters = {op: set() for op in range(num_ops)} 
+
+            #build temporary clusters for this assignment round
+            current_clusters = {op: set() for op in range(num_ops)}
             ops_to_process = set()
             
-            # tie-breaking load metric (still tracked, but not used as the absolute winner anymore)
+            #current load (number of assigned orders per op) used as tie-breaker
             op_loads = {op: len(route) for op, route in final_op_routes.items()}
             
             dead_orders = set()
-            
-            # assign pending orders to best available bucket candidate
+
             for o in list(orders_to_assign):
-                while True:
-                    b_idx = order_bucket_idx[o]
-                    if b_idx >= len(order_preferences[o]):
-                        dead_orders.add(o) 
-                        break
+                b_idx = order_bucket_state[o]
+                found_candidate = False
+                
+                #scan down probability buckets until a valid candidate is found
+                while b_idx < len(order_sorted_buckets[o]):
+                    bucket_val = order_sorted_buckets[o][b_idx]
+                    candidates = order_preferences[o][bucket_val]
                     
-                    bucket = order_preferences[o][b_idx]
-                    candidates = bucket['ops']
-                    valid_candidates = [op for op in candidates if op not in order_tried_ops[o]]
+                    #filter untried candidates
+                    valid_candidates = [c for c in candidates if c not in order_tried_ops[o]]
                     
-                    if not valid_candidates:
-                        order_bucket_idx[o] += 1
-                        continue 
-                    
-                    # STR- tie-breaking helper function to get raw assignment prob for (op, o)
-                    def get_raw_assign_prob(candidate_op):
-                        mask = (assign_idx[0] == candidate_op) & (assign_idx[1] == o)
-                        idx_array = np.where(mask)[0]
-                        if len(idx_array) > 0:
-                            return float(p_assign[idx_array[0]])
-                        return 0.0
-                    
-                    # NEW TIE-BREAKER: Do not use op_loads as the primary key. 
-                    # Rely strictly on GNN probabilities (Activation > Assignment > deterministic ID fallback)
-                    # valid_candidates.sort(
-                    #     key=lambda op: (
-                    #         p_act[op],                 
-                    #         get_raw_assign_prob(op),   
-                    #         -op                        
-                    #     ),
-                    #     reverse=True
-                    # )
-                    # NEW TIE-BREAKER: Use current load as a PENALTY (ascending sort)
-                    # We want to give the order to the operator with the FEWEST currently assigned orders
-                    # This ensures all operators build their routes simultaneously.
-                    valid_candidates.sort(
-                        key=lambda op: (
-                            # 1. PENALIZE LOAD: Operators with fewer orders get priority (ascending)
-                            op_loads.get(op, 0) + len(current_clusters.get(op, set())),
-                            # 2. Reward high activation confidence (descending)
-                            -p_act[op],                 
-                            # 3. Reward high assignment confidence (descending)
-                            -get_raw_assign_prob(op),   
-                            # 4. Deterministic fallback (descending)
-                            -op                        
-                        ),
-                    reverse=False # NOTE: We changed this to False because we want ascending load!
-                    )
-
-                    best_op = None
-                    # Search valid candidates for the first one that hasn't exceeded the heuristic soft cap
-                    for candidate in valid_candidates:
-                        current_load = op_loads.get(candidate, 0) + len(current_clusters.get(candidate, set()))
-                        if current_load < max_capacity_per_op:
-                            best_op = candidate
-                            break
-                            
-                    # If all operators in this bucket are full, force it to fall to the next bucket
-                    # OR if we are desperate, just give it to the absolute best operator anyway
-                    if best_op is None:
+                    if valid_candidates:
+                        #hierarchical tie-breaker:
+                        # 1. Is operator active? (True > False)
+                        # 2. Activation Probability (higher is better)
+                        # 3. Current Load (higher is better, keeps clusters dense)
+                        # 4. Operator ID (deterministic fallback)
+                        valid_candidates.sort(
+                            key=lambda c: (c in active_ops, p_act[c], op_loads.get(c, 0), -c), 
+                            reverse=True
+                        )
                         best_op = valid_candidates[0]
+                        current_clusters[best_op].add(o)
+                        ops_to_process.add(best_op)
+                        order_tried_ops[o].add(best_op)
+                        found_candidate = True
+                        break
+                    else:
+                        b_idx += 1
+                        order_bucket_state[o] = b_idx
+                
+                if not found_candidate:
+                    dead_orders.add(o)
 
-                    current_clusters[best_op].add(o)
-                    ops_to_process.add(best_op)
-                    order_tried_ops[o].add(best_op)
-                    break
-            
+            #remove completely exhausted orders (should rarely happen with fallback)
             for o in dead_orders:
                 orders_to_assign.remove(o)
-                
-            # re-add existing routed orders so we don't overwrite them
-            for op, route in final_op_routes.items():
-                if op in ops_to_process:
-                    existing = {s["_internal"] for s in route}
-                    current_clusters[op].update(existing)
-                    
-            # route each cluster
+
+            #if no new assignments proposed, break to avoid infinite loop
+            if not ops_to_process:
+                break
+
+            #add existing assigned orders to the clusters we are reprocessing
+            for op in ops_to_process:
+                existing = {s["_internal"] for s in final_op_routes[op]}
+                current_clusters[op].update(existing)
+
+            #STR- local Sequence Routing
             rejected_orders = set()
+
             for op in ops_to_process:
                 orders = list(current_clusters[op])
                 if not orders: continue
                 
-                # sort cluster by assignment preference
-                orders.sort(key=lambda o: next((grp['prob'] for grp in order_preferences.get(o, []) if op in grp['ops']), 0.0), reverse=True)
-                
+                #sort cluster by assignment preference to op
+                #this prioritizes routing the orders that \"belong\" best to this operator
+                def get_prob(o):
+                    mask = (assign_idx[0] == op) & (assign_idx[1] == o)
+                    idx_array = np.where(mask)[0]
+                    return float(p_assign[idx_array[0]]) if len(idx_array) > 0 else 0.0
+
+                orders.sort(key=lambda o: get_prob(o), reverse=True)
+
                 unvisited = set(orders)
                 route_steps = []
                 current_time = 0.0
                 curr = None
-                
-                # initial start
+
+                #initial start: first valid task under time constraints
                 for cand in orders:
-                    t_travel = travel_time_map.get((-1, cand), avg_travel_time) 
+                    t_travel = base_travel_map.get((op, cand), avg_travel_time) 
                     t_proc = proc_time_map.get((op, cand), 0.0)
-                    
+
                     if (t_proc + t_travel) <= h_fixed_mins:
                         curr = cand
                         route_steps.append({
                             "mission_id": all_mission_ids[curr],
                             "_internal": curr,
-                            "start_time": round(t_travel, 2),
+                            "start_time": round(t_travel, 2), #start after travel from base
                             "finish_time": round(t_travel + t_proc, 2),
                             "processing_duration": round(t_proc, 2),
                             "travel_duration": round(t_travel, 2),
@@ -1331,39 +1309,39 @@ class ScheduleDecoder:
                         current_time = t_proc + t_travel
                         unvisited.discard(curr)
                         break
-                
-                # extend route using sequence probs
+
+                #route using sequence probs
                 if curr is not None:
                     while unvisited:
                         best_next = None
                         best_metrics = None
-                        
-                        # look at neighbors dictated by sequence head
+
+                        #check greedy neighbors first
                         if curr in seq_adj:
                             for neighbor, _ in seq_adj[curr]:
                                 if neighbor in unvisited:
                                     t_travel = travel_time_map.get((curr, neighbor), 0.0)
                                     t_proc = proc_time_map.get((op, neighbor), 0.0)
                                     finish = current_time + t_travel + t_proc
-                                    
+
                                     if finish <= h_fixed_mins:
                                         best_next = neighbor
                                         best_metrics = (t_travel, t_proc, finish)
                                         break
-                                        
-                        # fallback if sequence head fails to find a valid neighbor
+
+                        #fallback if no neighbor fits
                         if not best_next:
                             for neighbor in unvisited:
                                 t_travel = travel_time_map.get((curr, neighbor), avg_travel_time)
                                 if t_travel == 0.0: t_travel = avg_travel_time 
                                 t_proc = proc_time_map.get((op, neighbor), 0.0)
                                 finish = current_time + t_travel + t_proc
-                                
+
                                 if finish <= h_fixed_mins:
                                     best_next = neighbor
                                     best_metrics = (t_travel, t_proc, finish)
                                     break
-                                    
+
                         if best_next:
                             t, p, f = best_metrics
                             route_steps[-1]["successor"] = all_mission_ids[best_next]
@@ -1380,27 +1358,26 @@ class ScheduleDecoder:
                             curr = best_next
                             unvisited.discard(curr)
                         else:
-                            break
-                            
+                            break #route full
+
+                #commit route
                 final_op_routes[op] = route_steps
                 
-                #register rejected orders
+                #track orders that couldn't be routed
                 assigned_in_route = {s["_internal"] for s in route_steps}
                 for o in orders:
                     if o not in assigned_in_route:
                         rejected_orders.add(o)
-                        
-            if not rejected_orders:
-                break 
-            
-            #set rejected orders to be re-assigned
+
             orders_to_assign = rejected_orders
 
-            #STR- tail insertion for unassigned orders (orders that were assigned inactive ops who have act_prob < act_threhold)
-            #try to fit rejected orders_to_assign into final_op_routes[op] 
-            if orders_to_assign:
-                print(f"Tail-insertion pass: {len(orders_to_assign)} orders still unassigned")
-            
+        if orders_to_assign:
+            print(f"Tail-insertion pass: {len(orders_to_assign)} orders still unassigned")
+
+            predicted_schedule_name = filename.replace(".json", "")
+            if not predicted_schedule_name in self.batch_tail_insertions.keys():
+                self.batch_tail_insertions[predicted_schedule_name] = num_orders - assigned_count
+
             for o in list(orders_to_assign):
                 best_op = None
                 best_finish = None
@@ -1412,7 +1389,10 @@ class ScheduleDecoder:
                     route = final_op_routes.get(op, [])
                     curr_finish = route[-1]["finish_time"] if route else 0.0
                     last_node = route[-1]['_internal'] if route else None
-                    t_travel = travel_time_map.get((last_node, o), avg_travel_time) if last_node is not None else 0.0
+                    if last_node is not None:
+                        t_travel = travel_time_map.get((last_node, o), avg_travel_time)
+                    else:
+                        t_travel = base_travel_map.get((op, o), avg_travel_time)
                     t_proc = proc_time_map.get((op, o), 0.0)
                     finish = curr_finish + t_travel + t_proc
 
@@ -1420,17 +1400,18 @@ class ScheduleDecoder:
                         if best_finish is None or finish < best_finish:
                             best_finish = finish
                             best_op = op
-                            best_t_travel = t_travel  
-                            best_t_proc = t_proc      
-                            
+                            best_t_travel = t_travel 
+                            best_t_proc = t_proc 
+                
+                #if we found a spot, append it!
                 if best_op is not None:
                     route = final_op_routes[best_op]
-                    start_time = route[-1]["finish_time"] if route else 0.0
+                    travel_start_time = route[-1]["finish_time"] if route else 0.0
                     step = {
                         "mission_id": all_mission_ids[o],
                         "_internal": o,
-                        "start_time": round(start_time + best_t_travel, 2), 
-                        "finish_time": round(start_time + best_t_travel + best_t_proc, 2), 
+                        "start_time": round(travel_start_time + best_t_travel, 2), 
+                        "finish_time": round(travel_start_time + best_t_travel + best_t_proc, 2), 
                         "processing_duration": round(best_t_proc, 2),
                         "travel_duration": round(best_t_travel, 2), 
                         "successor": None,
@@ -1442,13 +1423,13 @@ class ScheduleDecoder:
                     print(f"Tail-inserted order {o} to Op {best_op}")
 
 
-        #reconstruct schedule with timings
+        #reconstruct output schedule
         schedule_data = {
             "metadata": {
                 "num_orders": int(num_orders),
                 "num_operators": int(num_ops),
-                "valid": True, 
-                "schedule_id": getattr(batch, 'schedule_id', 'unknown')[0] if hasattr(batch, 'schedule_id') else 'unknown',
+                "valid": True,
+                "schedule_id": getattr(batch, 'schedule_id', ['unknown'])[0] if hasattr(batch, 'schedule_id') else 'unknown',
             },
             "operators": []
         }
@@ -1464,54 +1445,62 @@ class ScheduleDecoder:
                 })
                 assigned_count += len(clean_route)
 
-        activate_extra_op=False
-        if assigned_count < num_orders and len(active_ops):
+        activate_extra_op = False
+
+        if assigned_count < num_orders and len(active_ops) < num_ops:
             print(f"Warning: {num_orders - assigned_count} orders unassigned.")
-            activate_extra_op=True
-            
-            predicted_schedule_name = filename.replace(".json", "")
-            if not predicted_schedule_name in self.batch_tail_insertions.keys():
-                self.batch_tail_insertions[predicted_schedule_name] = num_orders - assigned_count
+            logging.info(f"Warning: {num_orders - assigned_count} orders unassigned.")
+
+            activate_extra_op = True
+
+        predicted_schedule_name = filename.replace(".json", "")
+        if not predicted_schedule_name in self.batch_tail_insertions_with_new_activations.keys():
+            self.batch_tail_insertions_with_new_activations[predicted_schedule_name] = num_orders - assigned_count
 
         if activate_extra_op and len(active_ops) + n_extra_ops_to_use < np.size(p_act):
             n_extra_ops_to_use = n_extra_ops_to_use + 1
-            print(f"Trying to resolve by activating extra [{n_extra_ops_to_use}] operators.")
+            print(f"Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
+            logging.info(f"Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
 
             self.export_schedule_with_timings_v3(batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
         else:
             unassigned_orders = num_orders - assigned_count
             schedule_data["metadata"]["unassigned_orders"] = unassigned_orders
-
             if unassigned_orders > 0:
                 print(colored_background_str(r=255, g=0, b=5, text=f"Warning: {unassigned_orders} orders remain unassigned."))
 
-            #check if there's any activated ghost operator
-            if len(active_ops) + n_extra_ops_to_use > np.size(p_act):
-                schedule_data["metadata"]["valid"] = False
-
             h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
+
             schedule_data["metadata"]["horizon_valid"] = h_valid
             schedule_data["metadata"]["horizon_violations"] = h_violations
 
+            #ensure output directory exists
             os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
+
+            #save schedule
             with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
                 json.dump(schedule_data, f, indent=4)
-                
+
             print(f"Schedule exported with name: {filename}")
+            logging.info(f"Schedule exported with name: {filename}")
+
 
     @torch.no_grad()
     def export_schedule_with_timings_v3_hungarian(self, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
         """
         Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
-        Uses the Hungarian Algorithm (linear_sum_assignment) for global fairness distribution.
+        Uses the Hungarian Algorithm (linear_sum_assignment) for global fairness distribution 
+        instead of greedy probability buckets.
         """
         global_time_scale = 1.0
         if hasattr(batch, 'global_scale_factor'):
+            #take mean or first if batched
             global_time_scale = batch.global_scale_factor.mean().item()
 
         if not hasattr(batch, 'u') or batch.u is None:
             return True, []
 
+        #batch.u shape is [1, 3]
         h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
 
         #prepare probs of each head
@@ -1523,24 +1512,31 @@ class ScheduleDecoder:
         assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')].cpu().numpy()
         seq_idx = batch.edge_index_dict[('order', 'to', 'order')].cpu().numpy()
 
-        #processing time (op -> order)
+        #processing time and base travel time (op -> order)
         proc_time_map = {}
+        base_travel_map = {}
         assign_attr = batch.edge_attr_dict[('operator', 'assign', 'order')].cpu().numpy()
         for i in range(assign_idx.shape[1]):
-            val = float(assign_attr[i][0]) if assign_attr.ndim > 1 else float(assign_attr[i])
-            proc_time_map[(assign_idx[0, i], assign_idx[1, i])] = val * global_time_scale
+            val_proc = float(assign_attr[i][0]) if assign_attr.ndim > 1 else float(assign_attr[i])
+            val_travel = float(assign_attr[i][1]) if assign_attr.ndim > 1 and assign_attr.shape[1] > 1 else 0.0
+            
+            op = int(assign_idx[0, i])
+            order = int(assign_idx[1, i])
+            
+            proc_time_map[(op, order)] = val_proc * global_time_scale
+            base_travel_map[(op, order)] = val_travel * global_time_scale
 
-        #travel time
         travel_time_map = {}
         seq_attr = batch.edge_attr_dict[('order', 'to', 'order')].cpu().numpy()
         for i in range(seq_idx.shape[1]):
             val = float(seq_attr[i][0]) if seq_attr.ndim > 1 else float(seq_attr[i])
             travel_time_map[(int(seq_idx[0, i]), int(seq_idx[1, i]))] = val * global_time_scale
 
-        avg_travel_time = 1.0 
         if travel_time_map:
             avg_travel_time = sum(travel_time_map.values()) / len(travel_time_map)
             if avg_travel_time == 0: avg_travel_time = 1.0 
+        else:
+            avg_travel_time = 1.0 
 
         #travel time (order -> order): (u, v) -> prob
         seq_adj = {}
@@ -1549,7 +1545,6 @@ class ScheduleDecoder:
             prob = float(p_seq[i])
             if u not in seq_adj: seq_adj[u] = []
             seq_adj[u].append((v, prob))
-            
         for u in seq_adj:
             seq_adj[u].sort(key=lambda x: x[1], reverse=True) 
 
@@ -1558,12 +1553,13 @@ class ScheduleDecoder:
         num_orders = batch['order'].num_nodes
         num_ops = batch['operator'].num_nodes
 
-        #ativation
+        #STR- activation
         active_ops = set(np.where(p_act >= self.act_threshold)[0])
 
         if use_extra_ops:
             inactive_ops = [op for op in range(num_ops) if op not in active_ops]
-            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x])[:n_extra_ops_to_use]
+            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
+            
             for best_inactive_op in best_inactive_ops:
                 active_ops.add(best_inactive_op)
 
@@ -1573,14 +1569,16 @@ class ScheduleDecoder:
 
         #STR- hungarian global assignment
         num_active = max(1, len(active_ops))
-        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 1.5))
-        
+        #estimate max capacity: assume each operator can at most take (total_orders / active_ops) * margin
+        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 3.0))
+
         active_ops_list = list(active_ops)
         total_slots = len(active_ops_list) * max_capacity_per_op
-        
-        #initialize to 10.0 (high penalty because we are minimizing)
+
+        #initialize to 10.0 (high penalty because we are minimizing cost)
         cost_matrix = np.full((num_orders, total_slots), 10.0) 
-        
+
+        #map slot column index back to operator id
         col_to_op = {}
         col_idx = 0
         for op in active_ops_list:
@@ -1592,95 +1590,58 @@ class ScheduleDecoder:
         for o in range(num_orders):
             for col in range(total_slots):
                 op = col_to_op[col]
+                #find edge probability
                 mask = (assign_idx[0] == op) & (assign_idx[1] == o)
                 idx_array = np.where(mask)[0]
-                
-                #if edge exists, use negative prob (so maximizing prob = minimizing cost)
+
                 if len(idx_array) > 0:
                     prob = float(p_assign[idx_array[0]])
-                    if prob > 0.001:
+                    #only consider valid assignments
+                    if prob > 0.0:
+                        #cost is negative probability (maximizing prob = minimizing cost)
                         cost_matrix[o, col] = -prob 
 
-        #print cost matrix
-        #convert negative costs back to positive probabilities (and penalties to 0.0) for readability
-        readable_matrix = np.where(cost_matrix == 10.0, 0.0, -cost_matrix)
-        
-        #create labels so you know exactly which row/column is which
-        row_labels = [f"Order {o}" for o in range(num_orders)]
-        col_labels = [f"Op {col_to_op[c]}" for c in range(total_slots)]
-        
-        #create a DataFrame and print it
-        df_matrix = pd.DataFrame(readable_matrix, index=row_labels, columns=col_labels)
-        
-        print("\n" + "="*50)
-        print("HUNGARIAN ASSIGNMENT PROBABILITY MATRIX")
-        print("="*50)
-        print(df_matrix.to_string(float_format=lambda x: f"{x:.3f}")) #print the whole matrix without truncating middle columns
-        print("="*50 + "\n")
-
-        #sequence matrix
-        #create an n*n matrix initialized to 0.0
-        seq_prob_matrix = np.zeros((num_orders, num_orders))
-        
-        #fill the matrix using the raw sequence probabilities
-        for i in range(seq_idx.shape[1]):
-            u, v = int(seq_idx[0, i]), int(seq_idx[1, i])
-            prob = float(p_seq[i])
-            seq_prob_matrix[u, v] = prob
-            
-        #create labels for the rows (from) and columns (to)
-        order_labels = [f"Order {o}" for o in range(num_orders)]
-        
-        #create a DataFrame and print it
-        df_seq_matrix = pd.DataFrame(seq_prob_matrix, index=order_labels, columns=order_labels)
-        
-        print("\n" + "="*70)
-        print("SEQUENCE PROBABILITY MATRIX (Row = From, Col = To)")
-        print("="*70)
-        print(df_seq_matrix.to_string(float_format=lambda x: f"{x:.3f}"))
-        print("="*70 + "\n")
-
-        #solve global assignment
+        #solve Hungarian
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        
+
+        #build clusters from matches
         current_clusters = {op: set() for op in range(num_ops)}
         ops_to_process = set()
         orders_to_assign = set(range(num_orders))
-        
+
         for r, c in zip(row_ind, col_ind):
-            #if cost < 0, a valid probability match was found
-            if cost_matrix[r, c] < 0: 
+            if cost_matrix[r, c] < 0: #only accept if it was a valid probability match
                 assigned_op = col_to_op[c]
                 current_clusters[assigned_op].add(r)
                 ops_to_process.add(assigned_op)
                 orders_to_assign.remove(r)
 
-        #route sequence builder
+        #STR- local sequence routing
         final_op_routes = {op: [] for op in range(num_ops)} 
-        rejected_orders = set(orders_to_assign) #include orders Hungarian algorithm couldn't place
+        rejected_orders = set(orders_to_assign) #start with orders Hungarian couldn't place
 
         for op in ops_to_process:
             orders = list(current_clusters[op])
             if not orders: continue
             
-            #sort cluster by assignment preference
+            #sort cluster by assignment preference to op
             def get_prob(o):
                 mask = (assign_idx[0] == op) & (assign_idx[1] == o)
                 idx_array = np.where(mask)[0]
                 return float(p_assign[idx_array[0]]) if len(idx_array) > 0 else 0.0
 
             orders.sort(key=lambda o: get_prob(o), reverse=True)
-            
+
             unvisited = set(orders)
             route_steps = []
             current_time = 0.0
             curr = None
-            
+
             #initial start
             for cand in orders:
-                t_travel = travel_time_map.get((-1, cand), avg_travel_time) 
+                t_travel = base_travel_map.get((op, cand), avg_travel_time) 
                 t_proc = proc_time_map.get((op, cand), 0.0)
-                
+
                 if (t_proc + t_travel) <= h_fixed_mins:
                     curr = cand
                     route_steps.append({
@@ -1695,37 +1656,37 @@ class ScheduleDecoder:
                     current_time = t_proc + t_travel
                     unvisited.discard(curr)
                     break
-            
+
             #route using sequence probs
             if curr is not None:
                 while unvisited:
                     best_next = None
                     best_metrics = None
-                    
+
                     if curr in seq_adj:
                         for neighbor, _ in seq_adj[curr]:
                             if neighbor in unvisited:
                                 t_travel = travel_time_map.get((curr, neighbor), 0.0)
                                 t_proc = proc_time_map.get((op, neighbor), 0.0)
                                 finish = current_time + t_travel + t_proc
-                                
+
                                 if finish <= h_fixed_mins:
                                     best_next = neighbor
                                     best_metrics = (t_travel, t_proc, finish)
                                     break
-                                    
+
                     if not best_next:
                         for neighbor in unvisited:
                             t_travel = travel_time_map.get((curr, neighbor), avg_travel_time)
                             if t_travel == 0.0: t_travel = avg_travel_time 
                             t_proc = proc_time_map.get((op, neighbor), 0.0)
                             finish = current_time + t_travel + t_proc
-                            
+
                             if finish <= h_fixed_mins:
                                 best_next = neighbor
                                 best_metrics = (t_travel, t_proc, finish)
                                 break
-                                
+
                     if best_next:
                         t, p, f = best_metrics
                         route_steps[-1]["successor"] = all_mission_ids[best_next]
@@ -1743,7 +1704,7 @@ class ScheduleDecoder:
                         unvisited.discard(curr)
                     else:
                         break
-                        
+
             final_op_routes[op] = route_steps
             
             assigned_in_route = {s["_internal"] for s in route_steps}
@@ -1754,24 +1715,22 @@ class ScheduleDecoder:
         #STR- tail insertion for rejected/unassigned orders
         if rejected_orders:
             print(f"Tail-insertion pass: {len(rejected_orders)} orders still unassigned")
+            logging.info(f"Tail-insertion pass: {len(rejected_orders)} orders still unassigned")
             
             for o in list(rejected_orders):
                 best_op = None
                 best_finish = None
-                best_t_travel = 0.0  
-                best_t_proc = 0.0    
+                best_t_travel = 0.0 
+                best_t_proc = 0.0  
                 
                 for op in active_ops: 
                     route = final_op_routes.get(op, [])
                     curr_finish = route[-1]["finish_time"] if route else 0.0
                     last_node = route[-1]['_internal'] if route else None
-                    
-                    #correctly pull travel time from base (-1) if route is empty
                     if last_node is not None:
                         t_travel = travel_time_map.get((last_node, o), avg_travel_time)
                     else:
-                        t_travel = travel_time_map.get((-1, o), avg_travel_time)
-                        
+                        t_travel = base_travel_map.get((op, o), avg_travel_time)
                     t_proc = proc_time_map.get((op, o), 0.0)
                     finish = curr_finish + t_travel + t_proc
 
@@ -1779,14 +1738,12 @@ class ScheduleDecoder:
                         if best_finish is None or finish < best_finish:
                             best_finish = finish
                             best_op = op
-                            best_t_travel = t_travel  
-                            best_t_proc = t_proc      
-                            
+                            best_t_travel = t_travel 
+                            best_t_proc = t_proc 
+                
                 if best_op is not None:
                     route = final_op_routes[best_op]
-                    #the start of the travel is the finish time of the previous order (or 0.0 if first)
                     travel_start_time = route[-1]["finish_time"] if route else 0.0
-                    
                     step = {
                         "mission_id": all_mission_ids[o],
                         "_internal": o,
@@ -1801,6 +1758,7 @@ class ScheduleDecoder:
                     route.append(step)
                     rejected_orders.remove(o)
                     print(f"Tail-inserted order {o} to Op {best_op}")
+                    logging.info(f"Tail-inserted order {o} to Op {best_op}")
 
 
         #reconstruct output schedule
@@ -1828,15 +1786,19 @@ class ScheduleDecoder:
         activate_extra_op = False
         if assigned_count < num_orders and len(active_ops) < num_ops:
             print(f"Warning: {num_orders - assigned_count} orders unassigned.")
+            logging.critical(f"Warning: {num_orders - assigned_count} orders unassigned.")
+
             activate_extra_op = True
 
-            predicted_schedule_name = filename.replace(".json", "")
-            if not predicted_schedule_name in self.batch_tail_insertions.keys():
-                self.batch_tail_insertions[predicted_schedule_name] = num_orders - assigned_count
+        predicted_schedule_name = filename.replace(".json", "")
+        if not predicted_schedule_name in self.batch_tail_insertions.keys():
+            self.batch_tail_insertions[predicted_schedule_name] = num_orders - assigned_count
 
         if activate_extra_op and len(active_ops) + n_extra_ops_to_use < np.size(p_act):
             n_extra_ops_to_use = n_extra_ops_to_use + 1
             print(f"Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
+            logging.info(f"Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
+
             self.export_schedule_with_timings_v3_hungarian(batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
         else:
             unassigned_orders = num_orders - assigned_count
@@ -1849,15 +1811,494 @@ class ScheduleDecoder:
             schedule_data["metadata"]["horizon_valid"] = h_valid
             schedule_data["metadata"]["horizon_violations"] = h_violations
 
+            #ensure output directory exists
+            os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
+
+            #save schedule
+            with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
+                json.dump(schedule_data, f, indent=4)
+
+            print(f"Schedule exported with name: {filename}")
+            logging.info(f"Schedule exported with name: {filename}")
+
+
+    @torch.no_grad()
+    def export_schedule_with_timings_v3_hungarian_seq_refined(self, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
+        """
+        Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
+        Uses the Hungarian Algorithm (linear_sum_assignment) for global fairness distribution.
+        Includes a completely non-destructive Makespan Minimization Refinement pass.
+        """
+        # if '800' in filename:
+        #     use_extra_ops = True
+        #     n_extra_ops_to_use = 30
+
+        global_time_scale = 1.0
+        if hasattr(batch, 'global_scale_factor'):
+            global_time_scale = batch.global_scale_factor.mean().item()
+
+        if not hasattr(batch, 'u') or batch.u is None:
+            return True, []
+
+        h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
+
+        #prepare probs of each head
+        p_act = out['activation'].view(-1).cpu().numpy()
+        p_assign = out['assignment'].view(-1).cpu().numpy()
+        p_seq = out['sequence'].view(-1).cpu().numpy()
+
+        #edge indices (cpu for easier list processing)
+        assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')].cpu().numpy()
+        seq_idx = batch.edge_index_dict[('order', 'to', 'order')].cpu().numpy()
+
+        #processing time and base travel time (op -> order)
+        proc_time_map = {}
+        base_travel_map = {}
+        assign_attr = batch.edge_attr_dict[('operator', 'assign', 'order')].cpu().numpy()
+        for i in range(assign_idx.shape[1]):
+            val_proc = float(assign_attr[i][0]) if assign_attr.ndim > 1 else float(assign_attr[i])
+            val_travel = float(assign_attr[i][1]) if assign_attr.ndim > 1 and assign_attr.shape[1] > 1 else 0.0
+            
+            op = int(assign_idx[0, i])
+            order = int(assign_idx[1, i])
+            
+            proc_time_map[(op, order)] = val_proc * global_time_scale
+            base_travel_map[(op, order)] = val_travel * global_time_scale
+
+        #travel time
+        travel_time_map = {}
+        seq_attr = batch.edge_attr_dict[('order', 'to', 'order')].cpu().numpy()
+        for i in range(seq_idx.shape[1]):
+            val = float(seq_attr[i][0]) if seq_attr.ndim > 1 else float(seq_attr[i])
+            travel_time_map[(int(seq_idx[0, i]), int(seq_idx[1, i]))] = val * global_time_scale
+
+        avg_travel_time = 1.0 
+        if travel_time_map:
+            avg_travel_time = sum(travel_time_map.values()) / len(travel_time_map)
+            if avg_travel_time == 0: avg_travel_time = 1.0 
+
+        #travel time (order -> order): (u, v) -> prob
+        seq_adj = {}
+        for i in range(seq_idx.shape[1]):
+            u, v = int(seq_idx[0, i]), int(seq_idx[1, i])
+            prob = float(p_seq[i])
+            if u not in seq_adj: seq_adj[u] = []
+            seq_adj[u].append((v, prob))
+
+        for u in seq_adj:
+            seq_adj[u].sort(key=lambda x: x[1], reverse=True) 
+
+        all_mission_ids = batch['order'].global_id.cpu().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().tolist()
+        num_orders = batch['order'].num_nodes
+        num_ops = batch['operator'].num_nodes
+
+        #activation
+        active_ops = set(np.where(p_act >= self.act_threshold)[0])
+
+        if use_extra_ops:
+            inactive_ops = [op for op in range(num_ops) if op not in active_ops]
+            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
+            for best_inactive_op in best_inactive_ops:
+                active_ops.add(best_inactive_op)
+
+        if not active_ops:
+            k = max(1, int(num_ops * 0.3))
+            active_ops = set(np.argsort(p_act)[-k:].tolist())
+
+        #STR- hungarian global assignment
+        num_active = max(1, len(active_ops))
+        #max_capacity_per_op = int(math.ceil((num_orders / num_active) * 1.5))
+        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 3.0))
+
+        active_ops_list = list(active_ops)
+        total_slots = len(active_ops_list) * max_capacity_per_op
+
+        #initialize to 10.0 (high penalty because we are minimizing)
+        cost_matrix = np.full((num_orders, total_slots), 10.0) 
+
+        col_to_op = {}
+        col_idx = 0
+        for op in active_ops_list:
+            for _ in range(max_capacity_per_op):
+                col_to_op[col_idx] = op
+                col_idx += 1
+
+        #fill Cost Matrix
+        for o in range(num_orders):
+            for col in range(total_slots):
+                op = col_to_op[col]
+                mask = (assign_idx[0] == op) & (assign_idx[1] == o)
+                idx_array = np.where(mask)[0]
+
+                #if edge exists, use negative prob (so maximizing prob = minimizing cost)
+                if len(idx_array) > 0:
+                    prob = float(p_assign[idx_array[0]])
+                    if prob > 0.0:
+                        cost_matrix[o, col] = -prob 
+
+        #print cost matrix
+        #convert negative costs back to positive probabilities (and penalties to 0.0) for readability
+        readable_matrix = np.where(cost_matrix == 10.0, 0.0, -cost_matrix)
+
+        #create labels so you know exactly which row/column is which
+        row_labels = [f"Order {o}" for o in range(num_orders)]
+        col_labels = [f"Op {col_to_op[c]}" for c in range(total_slots)]
+
+        #create a DataFrame and print it
+        df_matrix = pd.DataFrame(readable_matrix, index=row_labels, columns=col_labels)
+
+        print("\n" + "="*50)
+        print("HUNGARIAN ASSIGNMENT PROBABILITY MATRIX")
+        print("="*50)
+        print(df_matrix.to_string(float_format=lambda x: f"{x:.3f}")) 
+        print("="*50 + "\n")
+
+        logging.info("="*50 + "\n")
+        logging.info("HUNGARIAN ASSIGNMENT PROBABILITY MATRIX")
+        logging.info(df_matrix.to_string(float_format=lambda x: f"{x:.3f}"))
+        logging.info("="*50 + "\n")
+
+        #sequence matrix
+        #create an n*n matrix initialized to 0.0
+        seq_prob_matrix = np.zeros((num_orders, num_orders))
+
+        #fill the matrix using the raw sequence probabilities
+        for i in range(seq_idx.shape[1]):
+            u, v = int(seq_idx[0, i]), int(seq_idx[1, i])
+            prob = float(p_seq[i])
+            seq_prob_matrix[u, v] = prob
+
+        #create labels for the rows (from) and columns (to)
+        order_labels = [f"Order {o}" for o in range(num_orders)]
+
+        #create a DataFrame and print it
+        df_seq_matrix = pd.DataFrame(seq_prob_matrix, index=order_labels, columns=order_labels)
+
+        print("\n" + "="*70)
+        print("SEQUENCE PROBABILITY MATRIX (Row = From, Col = To)")
+        print("="*70)
+        print(df_seq_matrix.to_string(float_format=lambda x: f"{x:.3f}"))
+        print("="*70 + "\n")
+
+        logging.info("="*70 + "\n")
+        logging.info("SEQUENCE PROBABILITY MATRIX (Row = From, Col = To)")
+        logging.info(df_seq_matrix.to_string(float_format=lambda x: f"{x:.3f}"))
+        logging.info("="*70 + "\n")
+
+        #solve global assignment
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+        current_clusters = {op: set() for op in range(num_ops)}
+        ops_to_process = set()
+        orders_to_assign = set(range(num_orders))
+
+        for r, c in zip(row_ind, col_ind):
+            #if cost < 0, a valid probability match was found
+            if cost_matrix[r, c] < 0: 
+                assigned_op = col_to_op[c]
+                current_clusters[assigned_op].add(r)
+                ops_to_process.add(assigned_op)
+                orders_to_assign.remove(r)
+
+        #route sequence builder
+        final_op_routes = {op: [] for op in range(num_ops)} 
+        rejected_orders = set(orders_to_assign) #include orders Hungarian algorithm couldn't place
+
+        for op in ops_to_process:
+            orders = list(current_clusters[op])
+            if not orders: continue
+
+            #sort cluster by assignment preference
+            def get_prob(o):
+                mask = (assign_idx[0] == op) & (assign_idx[1] == o)
+                idx_array = np.where(mask)[0]
+                return float(p_assign[idx_array[0]]) if len(idx_array) > 0 else 0.0
+
+            orders.sort(key=lambda o: get_prob(o), reverse=True)
+
+            unvisited = set(orders)
+            route_steps = []
+            current_time = 0.0
+            curr = None
+
+            #initial start
+            for cand in orders:
+                t_travel = base_travel_map.get((op, cand), avg_travel_time) 
+                t_proc = proc_time_map.get((op, cand), 0.0)
+
+                if (t_proc + t_travel) <= h_fixed_mins:
+                    curr = cand
+                    route_steps.append({
+                        "mission_id": all_mission_ids[curr],
+                        "_internal": curr,
+                        "start_time": round(t_travel, 2),
+                        "finish_time": round(t_travel + t_proc, 2),
+                        "processing_duration": round(t_proc, 2),
+                        "travel_duration": round(t_travel, 2),
+                        "successor": None
+                    })
+                    current_time = t_proc + t_travel
+                    unvisited.discard(curr)
+                    break
+
+            #route using sequence probs
+            if curr is not None:
+                while unvisited:
+                    best_next = None
+                    best_metrics = None
+
+                    if curr in seq_adj:
+                        for neighbor, _ in seq_adj[curr]:
+                            if neighbor in unvisited:
+                                t_travel = travel_time_map.get((curr, neighbor), 0.0)
+                                t_proc = proc_time_map.get((op, neighbor), 0.0)
+                                finish = current_time + t_travel + t_proc
+
+                                if finish <= h_fixed_mins:
+                                    best_next = neighbor
+                                    best_metrics = (t_travel, t_proc, finish)
+                                    break
+
+                    if not best_next:
+                        for neighbor in unvisited:
+                            t_travel = travel_time_map.get((curr, neighbor), avg_travel_time)
+                            if t_travel == 0.0: t_travel = avg_travel_time 
+                            t_proc = proc_time_map.get((op, neighbor), 0.0)
+                            finish = current_time + t_travel + t_proc
+
+                            if finish <= h_fixed_mins:
+                                best_next = neighbor
+                                best_metrics = (t_travel, t_proc, finish)
+                                break
+
+                    if best_next:
+                        t, p, f = best_metrics
+                        route_steps[-1]["successor"] = all_mission_ids[best_next]
+                        route_steps.append({
+                            "mission_id": all_mission_ids[best_next],
+                            "_internal": best_next,
+                            "start_time": round(current_time + t, 2),
+                            "finish_time": round(f, 2),
+                            "processing_duration": round(p, 2),
+                            "travel_duration": round(t, 2),
+                            "successor": None
+                        })
+                        current_time = f
+                        curr = best_next
+                        unvisited.discard(curr)
+                    else:
+                        break
+
+            final_op_routes[op] = route_steps
+
+            assigned_in_route = {s["_internal"] for s in route_steps}
+            for o in orders:
+                if o not in assigned_in_route:
+                    rejected_orders.add(o)
+
+        #STR- tail insertion for rejected/unassigned orders
+        if rejected_orders:
+            print(f"Tail-insertion pass: {len(rejected_orders)} orders still unassigned")
+            logging.info(f"Tail-insertion pass: {len(rejected_orders)} orders still unassigned")
+
+            predicted_schedule_name = filename.replace(".json", "")
+            if not predicted_schedule_name in self.batch_tail_insertions.keys():
+                self.batch_tail_insertions[predicted_schedule_name] = len(rejected_orders)
+
+            for o in list(rejected_orders):
+                best_op = None
+                best_finish = None
+                best_t_travel = 0.0 
+                best_t_proc = 0.0 
+
+                for op in active_ops: 
+                    route = final_op_routes.get(op, [])
+                    curr_finish = route[-1]["finish_time"] if route else 0.0
+                    last_node = route[-1]['_internal'] if route else None
+
+                    #correctly pull travel time from base (-1) if route is empty
+                    if last_node is not None:
+                        t_travel = travel_time_map.get((last_node, o), avg_travel_time)
+                    else:
+                        t_travel = base_travel_map.get((op, o), avg_travel_time)
+
+                    t_proc = proc_time_map.get((op, o), 0.0)
+                    finish = curr_finish + t_travel + t_proc
+
+                    if finish <= h_fixed_mins:
+                        if best_finish is None or finish < best_finish:
+                            best_finish = finish
+                            best_op = op
+                            best_t_travel = t_travel 
+                            best_t_proc = t_proc 
+
+                if best_op is not None:
+                    route = final_op_routes[best_op]
+                    #the start of the travel is the finish time of the previous order (or 0.0 if first)
+                    travel_start_time = route[-1]["finish_time"] if route else 0.0
+                    step = {
+                        "mission_id": all_mission_ids[o],
+                        "_internal": o,
+                        "start_time": round(travel_start_time + best_t_travel, 2), 
+                        "finish_time": round(travel_start_time + best_t_travel + best_t_proc, 2), 
+                        "processing_duration": round(best_t_proc, 2),
+                        "travel_duration": round(best_t_travel, 2), 
+                        "successor": None,
+                    }
+                    if route:
+                        route[-1]["successor"] = all_mission_ids[o]
+                    route.append(step)
+                    rejected_orders.remove(o)
+                    print(f"Tail-inserted order {o} to Op {best_op}")
+                    logging.info(f"Tail-inserted order {o} to Op {best_op}")
+
+        # --- 5. SAFE sequence refinement (Makespan Minimization) ---
+        for op, route in final_op_routes.items():
+            if len(route) <= 2:
+                continue 
+
+            cluster_nodes = [s['_internal'] for s in route]
+            current_best_makespan = route[-1]['finish_time']
+            best_route_steps = list(route) 
+
+            def get_travel(u, v):
+                if u == -1:
+                    return base_travel_map.get((op, v), avg_travel_time)
+                t = travel_time_map.get((u, v), avg_travel_time)
+                if t == 0.0: 
+                    t = avg_travel_time
+                return t
+
+            def evaluate_makespan(rt_nodes):
+                current_time = 0.0
+                for i, cand in enumerate(rt_nodes):
+                    prev = rt_nodes[i-1] if i > 0 else -1
+                    t_travel = get_travel(prev, cand)
+                    t_proc = proc_time_map.get((op, cand), 0.0)
+                    finish = current_time + t_travel + t_proc
+
+                    if finish > h_fixed_mins:
+                        return False, float('inf')
+                    current_time = finish
+                return True, current_time
+
+            def build_steps_for_nodes(rt_nodes):
+                current_time = 0.0
+                steps = []
+                for i, cand in enumerate(rt_nodes):
+                    prev = rt_nodes[i-1] if i > 0 else -1
+                    t_travel = get_travel(prev, cand)
+                    t_proc = proc_time_map.get((op, cand), 0.0)
+                    finish = current_time + t_travel + t_proc
+
+                    steps.append({
+                        'mission_id': all_mission_ids[cand],
+                        '_internal': cand,
+                        'start_time': round(current_time + t_travel, 2),
+                        'finish_time': round(finish, 2),
+                        'processing_duration': round(t_proc, 2),
+                        'travel_duration': round(t_travel, 2),
+                        'successor': None
+                    })
+                    current_time = finish
+
+                for i in range(len(steps) - 1):
+                    steps[i]['successor'] = steps[i+1]['mission_id']
+                return steps
+
+            improved = True
+            while improved:
+                improved = False
+                for i in range(len(cluster_nodes)):
+                    for j in range(i + 1, len(cluster_nodes)):
+
+                        # 1. Try Point Swap 
+                        new_nodes_swap = cluster_nodes[:]
+                        new_nodes_swap[i], new_nodes_swap[j] = new_nodes_swap[j], new_nodes_swap[i]
+
+                        is_feas_swap, new_makespan_swap = evaluate_makespan(new_nodes_swap)
+                        if is_feas_swap and new_makespan_swap < current_best_makespan - 1e-3:
+                            current_best_makespan = new_makespan_swap
+                            cluster_nodes = new_nodes_swap
+                            best_route_steps = build_steps_for_nodes(cluster_nodes)
+                            improved = True
+                            continue
+
+                        # 2. Try 2-Opt Segment Reversal
+                        new_nodes_rev = cluster_nodes[:i] + cluster_nodes[i:j+1][::-1] + cluster_nodes[j+1:]
+
+                        is_feas_rev, new_makespan_rev = evaluate_makespan(new_nodes_rev)
+                        if is_feas_rev and new_makespan_rev < current_best_makespan - 1e-3:
+                            current_best_makespan = new_makespan_rev
+                            cluster_nodes = new_nodes_rev
+                            best_route_steps = build_steps_for_nodes(cluster_nodes)
+                            improved = True
+                            continue
+
+            final_op_routes[op] = best_route_steps
+
+        #reconstruct output schedule
+        schedule_data = {
+            "metadata": {
+                "num_orders": int(num_orders),
+                "num_operators": int(num_ops),
+                "valid": True,
+                "schedule_id": getattr(batch, 'schedule_id', ['unknown'])[0] if hasattr(batch, 'schedule_id') else 'unknown',
+            },
+            "operators": []
+        }
+
+        assigned_count = 0
+        for op_idx, route in final_op_routes.items():
+            if route:
+                clean_route = [{k:v for k,v in s.items() if k!="_internal"} for s in route]
+                schedule_data["operators"].append({
+                    "operator_id": all_operator_ids[op_idx],
+                    "assigned_orders_count": len(clean_route),
+                    "routes": [clean_route]
+                })
+                assigned_count += len(clean_route)
+
+        activate_extra_op = False
+        if assigned_count < num_orders and len(active_ops) < num_ops:
+            print(f"Warning: {num_orders - assigned_count} orders unassigned.")
+            logging.critical(f"Warning: {num_orders - assigned_count} orders unassigned.")
+
+            activate_extra_op = True
+
+            predicted_schedule_name = filename.replace(".json", "")
+            if not predicted_schedule_name in self.batch_tail_insertions_with_new_activations.keys():
+                self.batch_tail_insertions_with_new_activations[predicted_schedule_name] = num_orders - assigned_count
+
+        if activate_extra_op and len(active_ops) + n_extra_ops_to_use < np.size(p_act):
+            n_extra_ops_to_use = n_extra_ops_to_use + 1
+            print(f"Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
+            logging.info(f"Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
+
+            self.export_schedule_with_timings_v3_hungarian_seq_refined(batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
+        else:
+            unassigned_orders = num_orders - assigned_count
+            schedule_data["metadata"]["unassigned_orders"] = unassigned_orders
+            if unassigned_orders > 0:
+                print(colored_background_str(r=255, g=0, b=5, text=f"Warning: {unassigned_orders} orders remain unassigned."))
+                logging.CRITICAL(f"Warning: {unassigned_orders} orders remain unassigned.")
+
+            h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
+
+            schedule_data["metadata"]["horizon_valid"] = h_valid
+            schedule_data["metadata"]["horizon_violations"] = h_violations
+
             os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
             with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
                 json.dump(schedule_data, f, indent=4)
 
             print(f"Schedule exported with name: {filename}")
+            logging.info(f"Schedule exported with name: {filename}")
 
 
 if __name__ == "__main__":
-    use_large_scale = True
+    use_large_scale = False
 
     if use_large_scale:
         #init large-scale dataset
@@ -1894,7 +2335,7 @@ if __name__ == "__main__":
         'lr_assignment': 0.0005,
         'lr_sequence': 0.001
     }
-
+    
     # #tuned thresholds for feasibility validation (B100)
     # best_thresholds =  {
     #     'activation': 0.2137,
@@ -2000,10 +2441,43 @@ if __name__ == "__main__":
 
     #with normalized monotic id & capacity penalty & affinity score
     #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.4816,
+    #     'assignment': 0.0730,
+    #     'sequence': 0.1057
+    # }
+
+    #heuristic-boost capacity penalty + no alpha/beta loss
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.5098,
+    #     'assignment': 0.0789,
+    #     'sequence': 0.0970
+    # }
+
+    #heuristic-boost capacity penalty + no alpha/beta loss + no assignment monotonic id
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.5284,
+    #     'assignment': 0.0813,
+    #     'sequence': 0.0926
+    # }
+
+
+    #Augumented data - heuristic-boost capacity penalty + no alpha/beta loss + no assignment monotonic id
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.5147,
+    #     'assignment': 0.0829,
+    #     'sequence': 0.0836
+    # }
+
+    #Augumented data (4 augmentations) - heuristic-boost capacity penalty + no alpha/beta loss + no assignment monotonic id
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
     best_thresholds =  {
-        'activation': 0.4816,
-        'assignment': 0.0730,
-        'sequence': 0.1057
+        'activation': 0.4813,
+        'assignment': 0.0907,
+        'sequence': 0.0858
     }
 
     model = MultiCriteriaGNNModel(
@@ -2026,10 +2500,11 @@ if __name__ == "__main__":
                                         act_threshold=best_thresholds['activation'],
                                         assign_threshold=best_thresholds['assignment'],
                                         seq_threshold=best_thresholds['sequence'],
-                                        split_train_validation=not use_large_scale
+                                        split_train_validation=not use_large_scale,
+                                        use_spatial_augmentation=use_large_scale
                                         )
     
-    loader = DataLoader(schedule_evaluator.schedule_val_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    loader = DataLoader(schedule_evaluator.schedule_val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     scheduleDecoder = ScheduleDecoder(
         act_threshold=best_thresholds['activation'],
@@ -2048,9 +2523,11 @@ if __name__ == "__main__":
         #op_embd = schedule_evaluator.diagnose_operator_embeddings(model, batch)
 
         print(f"Evaluating schedule_id: {batch.schedule_id[0]}")
+        logging.info(f"Evaluating schedule_id: {batch.schedule_id[0]}")
 
         if batch['order'].num_nodes < 2:
             print(f"Schedule [{idx}] has less than 2 orders, skipping feasibility/export check.")
+            logging.info(f"Schedule [{idx}] has less than 2 orders, skipping feasibility/export check.")
             continue
 
         out = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict)
@@ -2059,19 +2536,39 @@ if __name__ == "__main__":
 
         idx = idx + 1
         #scheduleValidator.export_schedule_with_timings_v2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        #scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_hungarian(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        scheduleDecoder.export_schedule_with_timings_v3_hungarian_seq_refined(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
 
         #print(report)
         if is_valid:
             print(f"Schedule [{idx}] is Feasible!")
+            logging.info(f"Schedule [{idx}] is Feasible!")
             #safe to calculate optimality gap
             pass
         else:
-            print(f"Schedule [{idx}] is NOT Feasible!")
+            print(colored_background_str(r=255, g=0, b=5, text=f"Schedule [{idx}] is NOT Feasible!"))
+            logging.CRITICAL(f"Schedule [{idx}] is NOT Feasible!")
             print(f"Activation Feasibility: {report['act_ok']} with stats {report['act_errs']}")
 
             if not report["seq_ok"]:
                 print(f"Sequence Invalid: {report['seq_errs']}")
+
+    tail_insertions = str(scheduleDecoder.batch_tail_insertions).replace(",", ",\n")
     
-    print(f"Batch Tail Insertions: {scheduleDecoder.batch_tail_insertions}")
+    print(f"Batch Tail Insertions: {tail_insertions}")
+    logging.info(f"Batch Tail Insertions: {tail_insertions}")
+
+    additional_act_tail_insertions = str(scheduleDecoder.batch_tail_insertions_with_new_activations).replace(",", ",\n")
+    print(f"Batch Additional Activation Tail Insertions: {additional_act_tail_insertions}")
+    logging.info(f"Batch Additional Activation Tail Insertions: {additional_act_tail_insertions}")
+
+    overall_tail_insertions = dict()
+    overall_tail_insertions["tail_insertions"] = scheduleDecoder.batch_tail_insertions
+    overall_tail_insertions["additional_act_tail_insertions"] = scheduleDecoder.batch_tail_insertions_with_new_activations
+
+    #save tail insertions
+    target_tail_insertions_dir = LARGE_BATCH_TAIL_INSERTIONS_DIR if use_large_scale else MINI_BATCH_TAIL_INSERTIONS_DIR
+    with open(target_tail_insertions_dir, 'w') as f:
+        json.dump(overall_tail_insertions, f, indent=4)
+        print(f"Saved tail insertions to {target_tail_insertions_dir}")
