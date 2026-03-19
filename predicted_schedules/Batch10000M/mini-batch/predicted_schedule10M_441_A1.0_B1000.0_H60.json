@@ -16,16 +16,16 @@
                 [
                     {
                         "mission_id": 3884242,
-                        "start_time": 10.22,
-                        "finish_time": 20.52,
+                        "start_time": 10.87,
+                        "finish_time": 21.17,
                         "processing_duration": 10.3,
-                        "travel_duration": 10.22,
+                        "travel_duration": 10.87,
                         "successor": 3888145
                     },
                     {
                         "mission_id": 3888145,
-                        "start_time": 30.76,
-                        "finish_time": 41.05,
+                        "start_time": 31.4,
+                        "finish_time": 41.7,
                         "processing_duration": 10.29,
                         "travel_duration": 10.24,
                         "successor": null
@@ -40,10 +40,10 @@
                 [
                     {
                         "mission_id": 3882118,
-                        "start_time": 10.22,
-                        "finish_time": 20.46,
+                        "start_time": 10.89,
+                        "finish_time": 21.12,
                         "processing_duration": 10.23,
-                        "travel_duration": 10.22,
+                        "travel_duration": 10.89,
                         "successor": null
                     }
                 ]
