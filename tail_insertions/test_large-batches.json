@@ -1,0 +1,17 @@
+{
+    "tail_insertions": {
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360": 52,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_flipped_x-axis": 52,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_flipped_y-axis": 68,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_swapped_x&y": 57,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_shifted_+20X_+20Y": 54,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_shifted_-20X_-20Y": 51,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_shifted_+50X_-50Y": 52,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_shifted_-50X_+50Y": 50,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_extreme_shift+200X": 52,
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_extreme_shift+200Y": 50
+    },
+    "additional_act_tail_insertions": {
+        "predicted_Batch_2_100M_distanced_A1.0_B1000.0_H360_aug_flipped_y-axis": 4
+    }
+}
