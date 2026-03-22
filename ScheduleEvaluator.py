@@ -668,3 +668,207 @@ class ScheduleEvaluator:
                 'total_cm': total_cm
             }
     
+    def evaluate_ar(self, use_train_set=False):
+        '''
+        evaluates the autoregressive model on the training/test dataset and returns average loss. 
+        use_train_set: if true, trains and evaluates on training set, else on test set.
+        '''
+
+        schedule_dataset = self.schedule_train_dataset if use_train_set else self.schedule_val_dataset
+
+        self.model.eval()
+        data_loader = DataLoader(schedule_dataset, batch_size=self.batch_size, shuffle=False)
+        total_epoch_loss = 0.0
+        total_epoch_accuracy = 0.0
+        total_epoch_f1 = 0.0
+
+        #single heads performance
+        act_loss = 0.0
+        assign_loss = 0.0
+        seq_loss = 0.0
+        act_accuracy = 0.0
+        assign_accuracy = 0.0
+        seq_accuracy = 0.0  
+        act_f1 = 0.0
+        assign_f1 = 0.0
+        seq_f1 = 0.0   
+        act_cm = np.zeros((2, 2), dtype=int)
+        assign_cm = np.zeros((2, 2), dtype=int)
+        seq_cm = np.zeros((2, 2), dtype=int)
+
+        with torch.no_grad():
+            for batch_idx, batch in tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Evaluating AR on {'training' if use_train_set else 'validation'} set"):
+                batch = batch.to(self.device)
+
+                #teacher forcing for validation
+                num_ops = batch['operator'].x.size(0)
+                num_orders = batch['order'].x.size(0)
+                
+                op_dynamic = torch.zeros((num_ops, 6), device=self.device)
+                order_dynamic = torch.zeros((num_orders, 1), device=self.device)
+                
+                #fetch batch indices to broadcast global u parameters
+                op_batch_idx = batch['operator'].batch if hasattr(batch['operator'], 'batch') else torch.zeros(num_ops, dtype=torch.long, device=self.device)
+                op_dynamic[:, 0] = batch.u[op_batch_idx, 2] #set remaining_h_fixed to max h_fixed initially
+                
+                #randomly determine how much of the mip schedule is already completed
+                rand_completion = torch.rand(1).item() 
+                true_assignments = batch['operator', 'assign', 'order'].y.view(-1)
+                assigned_indices = torch.where(true_assignments == 1)[0]
+                
+                #mask out a random subset of valid assignments to simulate a mid-routing state
+                num_to_mask = int(len(assigned_indices) * rand_completion)
+                masked_edge_indices = assigned_indices[torch.randperm(len(assigned_indices))[:num_to_mask]]
+                
+                src_idx = batch['operator', 'assign', 'order'].edge_index[0]
+                dst_idx = batch['operator', 'assign', 'order'].edge_index[1]
+                edge_attr = batch['operator', 'assign', 'order'].edge_attr
+                
+                #update operator and order states dynamically based on "past" taken steps
+                for idx in masked_edge_indices:
+                    op = src_idx[idx]
+                    order = dst_idx[idx]
+                    proc_time = edge_attr[idx, 0]
+                    travel_time = edge_attr[idx, 1] if edge_attr.size(1) > 1 else 0.0
+                    
+                    order_dynamic[order, 0] = 1.0 #is_assigned
+                    op_dynamic[op, 0] -= (proc_time + travel_time) #remaining_h_fixed
+                    op_dynamic[op, 1] += (proc_time + travel_time) #current_workload
+                    op_dynamic[op, 3] = batch['order'].x[order, 4] #current_X
+                    op_dynamic[op, 4] = batch['order'].x[order, 5] #current_Y
+                    op_dynamic[op, 5] = 1.0 #is_active
+                
+                #update delta_to_makespan per graph in the batch
+                for i in range(batch.u.size(0)):
+                    mask = (op_batch_idx == i)
+                    if mask.sum() > 0:
+                        max_workload = op_dynamic[mask, 1].max()
+                        op_dynamic[mask, 2] = max_workload - op_dynamic[mask, 1]
+
+                #dict for AR model to bypass pyg errors
+                x_dict_dynamic = {
+                    'operator': torch.cat([batch['operator'].x, op_dynamic], dim=1),
+                    'order': torch.cat([batch['order'].x, order_dynamic], dim=1)
+                }
+
+                batch_dict_arg = {
+                    'operator': batch['operator'].batch,
+                    'order': batch['order'].batch
+                }
+
+                #forward pass
+                preds_ar = self.model(
+                    x_dict_dynamic, 
+                    batch.edge_index_dict, 
+                    batch.edge_attr_dict,
+                    batch.u,
+                    batch_dict=batch_dict_arg
+                )
+
+                #target modification
+                target_action = true_assignments.clone()
+                target_action[masked_edge_indices] = 0 #zero out already taken steps so model isn't penalized for them
+                batch['operator', 'assign', 'order'].y = target_action.unsqueeze(1)
+                
+                #-Sequence Targets
+                #mask assignment targets
+                target_action = true_assignments.clone()
+                target_action[masked_edge_indices] = 0 
+                batch['operator', 'assign', 'order'].y = target_action.unsqueeze(1)
+
+                #mask sequence targets
+                #in autoregressive training, the model should not predict sequence edges that were already taken.
+                true_sequences = batch['order', 'to', 'order'].y.view(-1)
+                target_seq = true_sequences.clone()
+
+                #to mask the sequence, we zero out sequence edges where both the source and destination order 
+                #have already been completed (is_assigned = 1.0)
+                src_seq = batch['order', 'to', 'order'].edge_index[0]
+                dst_seq = batch['order', 'to', 'order'].edge_index[1]
+                #order_dynamic[:, 0] contains the 1.0 mask if the order is already done
+                completed_orders = torch.where(order_dynamic[:, 0] == 1.0)[0]
+
+                #find sequence edges where both ends are in the completed list
+                completed_mask = torch.isin(src_seq, completed_orders) & torch.isin(dst_seq, completed_orders)
+                target_seq[completed_mask] = 0
+                batch['order', 'to', 'order'].y = target_seq.unsqueeze(1)
+
+                preds = {
+                    'activation': preds_ar['terminate'], 
+                    'assignment': preds_ar['action'],
+                    'sequence':  preds_ar['sequence']
+                }
+
+                #compute loss and metrics
+                loss, l_act, l_assign, l_seq = self.weighted_loss(preds, batch, batch.u)
+                measurements = self.calculate_metrics(preds, batch)
+                f1_measurements = self.calc_overall_metrics(preds, batch)
+
+                total_epoch_loss += loss.item()
+                total_epoch_accuracy += sum([measurements['act_acc'], measurements['assign_acc'], measurements['seq_acc']]) / 3.0
+                total_epoch_f1 += f1_measurements['overall_f1']
+
+                #accumulate single head losses
+                act_loss += l_act
+                assign_loss += l_assign
+                seq_loss += l_seq
+
+                #accumulate single head accuracies
+                act_accuracy += measurements['act_acc']
+                assign_accuracy += measurements['assign_acc']
+                seq_accuracy += measurements['seq_acc']
+
+                #accumulate single head f1 scores
+                act_f1 += f1_measurements['activation']['f1']
+                assign_f1 += f1_measurements['assignment']['f1']
+                seq_f1 += f1_measurements['sequence']['f1']
+
+                #accumulate confusion matrices
+                act_cm += measurements['act_cm']
+                assign_cm += measurements['assign_cm']
+                seq_cm += measurements['seq_cm']
+
+            #compute average losses
+            average_total_loss = total_epoch_loss / len(data_loader)
+            average_act_loss = act_loss / len(data_loader)
+            average_assign_loss = assign_loss / len(data_loader)
+            average_seq_loss = seq_loss / len(data_loader)
+
+            #compute average accuracies
+            average_total_accuracy = total_epoch_accuracy / len(data_loader)
+            average_act_accuracy = act_accuracy / len(data_loader)
+            average_assign_accuracy = assign_accuracy / len(data_loader)
+            average_seq_accuracy = seq_accuracy / len(data_loader)
+
+            #compute average f1 scores
+            average_total_f1 = total_epoch_f1 / len(data_loader)
+            average_act_f1 = act_f1 / len(data_loader)
+            average_assign_f1 = assign_f1 / len(data_loader)
+            average_seq_f1 = seq_f1 / len(data_loader)
+
+            #compute confusion matrix
+            total_cm = act_cm + assign_cm + seq_cm
+            row_sums = total_cm.sum(axis=1, keepdims=True)
+            # prevent division by zero in logging just in case
+            row_sums = np.where(row_sums == 0, 1, row_sums)
+            total_normalized_cm = total_cm / row_sums 
+
+            return {
+                'total_loss': average_total_loss,
+                'act_loss': average_act_loss,
+                'assign_loss': average_assign_loss,
+                'seq_loss': average_seq_loss,
+                'total_accuracy': average_total_accuracy,
+                'act_accuracy': average_act_accuracy,
+                'assign_accuracy': average_assign_accuracy,
+                'seq_accuracy': average_seq_accuracy,
+                'total_f1': average_total_f1,
+                'act_f1': average_act_f1,
+                'assign_f1': average_assign_f1,
+                'seq_f1': average_seq_f1,
+                'act_cm': act_cm,
+                'assign_cm': assign_cm,
+                'seq_cm': seq_cm,
+                'total_cm': total_cm
+            }
+    
