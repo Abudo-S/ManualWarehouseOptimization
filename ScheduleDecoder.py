@@ -14,6 +14,7 @@ from scipy.optimize import linear_sum_assignment
 from torch_geometric.loader import DataLoader
 from ScheduleEvaluator import ScheduleEvaluator
 from MultiCriteriaGNNModel import MultiCriteriaGNNModel
+from MultiCriteriaGNNModel_AutoRegressive import MultiCriteriaGNNModel_AutoRegressive
 from GnnScheduleDataset import GnnScheduleDataset
 
 LARGE_SCALE_BATCH_NAME = "Batch10000M" #Batch1000M, Batch9000M or Batch10000M
@@ -2295,10 +2296,280 @@ class ScheduleDecoder:
 
             print(f"Schedule exported with name: {filename}")
             logging.info(f"Schedule exported with name: {filename}")
+    
+    @torch.no_grad()
+    def export_autoregressive_schedule(self, model, batch, filename="ar_schedule.json"):
+        """
+        True autoregressive decoding for inference.
+        Iteratively runs the GNN, picks the best valid operator-order assignment,
+        updates the dynamic state, and repeats until all orders are assigned.
+        Directly exports the JSON schedule.
+        """
+        model.eval()
+        device = batch.edge_index_dict[('operator', 'assign', 'order')].device
 
+        global_time_scale = 1.0
+        if hasattr(batch, 'global_scale_factor'):
+            global_time_scale = batch.global_scale_factor.mean().item()
+
+        num_ops = batch['operator'].x.size(0)
+        num_orders = batch['order'].x.size(0)
+        all_mission_ids = batch['order'].global_id.cpu().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().tolist()
+        
+        #initialize Dynamic Features (Step 0)
+        op_dynamic = torch.zeros((num_ops, 6), device=device)
+        order_dynamic = torch.zeros((num_orders, 1), device=device)
+        
+        op_batch_idx = batch['operator'].batch if hasattr(batch['operator'], 'batch') else torch.zeros(num_ops, dtype=torch.long, device=device)
+        order_batch_idx = batch['order'].batch if hasattr(batch['order'], 'batch') else torch.zeros(num_orders, dtype=torch.long, device=device)
+        
+        #init remaining_h_fixed (multiply by scale to match feature space)
+        op_dynamic[:, 0] = batch.u[op_batch_idx, 2]
+        
+        #original Time Constraints in Minutes
+        h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
+        
+        assign_src = batch['operator', 'assign', 'order'].edge_index[0]
+        assign_dst = batch['operator', 'assign', 'order'].edge_index[1]
+        assign_attrs = batch['operator', 'assign', 'order'].edge_attr
+
+        seq_src = batch['order', 'to', 'order'].edge_index[0].cpu().numpy()
+        seq_dst = batch['order', 'to', 'order'].edge_index[1].cpu().numpy()
+        seq_attr = batch['order', 'to', 'order'].edge_attr.cpu().numpy()
+        
+        #pre-build travel time map for orders
+        travel_time_map = {}
+        for i in range(len(seq_src)):
+            val = float(seq_attr[i][0]) if seq_attr.ndim > 1 else float(seq_attr[i])
+            travel_time_map[(int(seq_src[i]), int(seq_dst[i]))] = val * global_time_scale
+
+        avg_travel_time = sum(travel_time_map.values()) / max(1, len(travel_time_map))
+        if avg_travel_time == 0: avg_travel_time = 1.0 
+        
+        base_travel_map = {}
+        for i in range(len(assign_src)):
+            op = int(assign_src[i])
+            order = int(assign_dst[i])
+            val_travel = float(assign_attrs[i][1]) if assign_attrs.size(1) > 1 else 0.0
+            base_travel_map[(op, order)] = val_travel * global_time_scale
+
+        unassigned_orders = set(range(num_orders))
+        
+        #state tracking for json building
+        final_op_routes = {op: [] for op in range(num_ops)}
+        current_time_per_op = {op: 0.0 for op in range(num_ops)}
+
+        step = 0
+        max_steps = num_orders + 10 
+        
+        print(f"Starting AR Decoding for {num_orders} orders...")
+
+        while unassigned_orders and step < max_steps:
+            step += 1
+            
+            for i in range(batch.u.size(0)):
+                mask = (op_batch_idx == i)
+                if mask.sum() > 0:
+                    max_workload = op_dynamic[mask, 1].max()
+                    op_dynamic[mask, 2] = max_workload - op_dynamic[mask, 1]
+
+            x_dict_dynamic = {
+                'operator': torch.cat([batch['operator'].x, op_dynamic], dim=1),
+                'order': torch.cat([batch['order'].x, order_dynamic], dim=1)
+            }
+            batch_dict_arg = {'operator': op_batch_idx, 'order': order_batch_idx}
+
+            preds = model(
+                x_dict_dynamic, 
+                batch.edge_index_dict, 
+                batch.edge_attr_dict,
+                batch.u,
+                batch_dict=batch_dict_arg
+            )
+
+            p_assign = preds['action'].view(-1)
+            
+            #mask out invalid moves
+            valid_edge_mask = torch.ones_like(p_assign, dtype=torch.bool)
+            for e_idx in range(len(assign_dst)):
+                chosen_op = assign_src[e_idx].item()
+                chosen_order = assign_dst[e_idx].item()
+                
+                if chosen_order not in unassigned_orders:
+                    valid_edge_mask[e_idx] = False
+                    continue
+                    
+                proc_time_feat = assign_attrs[e_idx, 0].item()
+                
+                #calculate real travel time (from base if first order, or from previous order)
+                if len(final_op_routes[chosen_op]) == 0:
+                    real_travel_time = base_travel_map.get((chosen_op, chosen_order), avg_travel_time)
+                else:
+                    prev_order = final_op_routes[chosen_op][-1]['_internal']
+                    real_travel_time = travel_time_map.get((prev_order, chosen_order), avg_travel_time)
+                    
+                real_proc_time = proc_time_feat * global_time_scale
+                
+                #check if it fits in real time constraint
+                if current_time_per_op[chosen_op] + real_travel_time + real_proc_time > h_fixed_mins:
+                    valid_edge_mask[e_idx] = False
+
+            if not valid_edge_mask.any():
+                print(f"Decoding halted early at step {step}: Operators have no remaining time.")
+                break
+
+            p_assign_masked = p_assign.clone()
+            p_assign_masked[~valid_edge_mask] = -1.0
+
+            best_edge_idx = torch.argmax(p_assign_masked).item()
+            best_prob = p_assign_masked[best_edge_idx].item()
+            
+            if best_prob < 0: 
+                break
+
+            chosen_op = assign_src[best_edge_idx].item()
+            chosen_order = assign_dst[best_edge_idx].item()
+            proc_time_feat = assign_attrs[best_edge_idx, 0].item()
+            travel_time_feat = assign_attrs[best_edge_idx, 1].item() if assign_attrs.size(1) > 1 else 0.0
+
+            #calculate Actual Schedule Timings
+            if len(final_op_routes[chosen_op]) == 0:
+                t_travel = base_travel_map.get((chosen_op, chosen_order), avg_travel_time)
+            else:
+                prev_order = final_op_routes[chosen_op][-1]['_internal']
+                t_travel = travel_time_map.get((prev_order, chosen_order), avg_travel_time)
+                
+            t_proc = proc_time_feat * global_time_scale
+            
+            start_time = current_time_per_op[chosen_op] + t_travel
+            finish_time = start_time + t_proc
+            
+            #record Step in Route
+            step_dict = {
+                "mission_id": all_mission_ids[chosen_order],
+                "_internal": chosen_order,
+                "start_time": round(start_time, 2),
+                "finish_time": round(finish_time, 2),
+                "processing_duration": round(t_proc, 2),
+                "travel_duration": round(t_travel, 2),
+                "successor": None
+            }
+            
+            if len(final_op_routes[chosen_op]) > 0:
+                final_op_routes[chosen_op][-1]["successor"] = all_mission_ids[chosen_order]
+                
+            final_op_routes[chosen_op].append(step_dict)
+            current_time_per_op[chosen_op] = finish_time
+            unassigned_orders.remove(chosen_order)
+
+            #update GNN dynamic features
+            order_dynamic[chosen_order, 0] = 1.0 
+            op_dynamic[chosen_op, 0] -= (proc_time_feat + travel_time_feat) 
+            op_dynamic[chosen_op, 1] += (proc_time_feat + travel_time_feat) 
+            op_dynamic[chosen_op, 3] = batch['order'].x[chosen_order, 4] 
+            op_dynamic[chosen_op, 4] = batch['order'].x[chosen_order, 5] 
+            op_dynamic[chosen_op, 5] = 1.0 
+
+        #bBuild json output structure
+        os.makedirs(self.predicted_schedule_dir, exist_ok=True)
+        final_filepath = os.path.join(self.predicted_schedule_dir, filename)
+
+        schedule_id = filename.replace('.json', '')
+        
+        schedule_json = {
+            "metadata": {
+                "num_orders": num_orders,
+                "num_operators": num_ops,
+                "valid": len(unassigned_orders) == 0,
+                "schedule_id": schedule_id,
+                "unassigned_orders": len(unassigned_orders),
+                "horizon_valid": True,  #always guaranteed by the while loop logic
+                "horizon_violations": []
+            },
+            "operators": []
+        }
+        
+        for op_id, route in final_op_routes.items():
+            if not route:
+                continue
+                
+            operator_data = {
+                "operator_id": all_operator_ids[op_id],
+                "assigned_orders_count": len(route),
+                "workload_mins": round(route[-1]["finish_time"], 2) if route else 0.0,
+                "routes": [[]] 
+            }
+            
+            for step_data in route:
+                clean_step = step_data.copy()
+                del clean_step["_internal"] 
+                operator_data["routes"][0].append(clean_step)
+                
+            schedule_json["operators"].append(operator_data)
+        
+        with open(final_filepath, 'w') as f:
+            json.dump(schedule_json, f, indent=4)
+
+        print(f"Schedule exported with name: {filename}")
+
+def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
+    idx = 0
+    for batch in loader:
+        batch = batch.to(device)
+        batch_dict = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
+
+        #op_embd = schedule_evaluator.diagnose_operator_embeddings(model, batch)
+
+        print(f"Evaluating schedule_id: {batch.schedule_id[0]}")
+        logging.info(f"Evaluating schedule_id: {batch.schedule_id[0]}")
+
+        if batch['order'].num_nodes < 2:
+            print(f"Schedule [{idx}] has less than 2 orders, skipping feasibility/export check.")
+            logging.info(f"Schedule [{idx}] has less than 2 orders, skipping feasibility/export check.")
+            continue
+
+        out = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict)
+
+        is_valid, report = scheduleDecoder.evaluate_full_feasibility(batch, out)
+
+        idx = idx + 1
+        #scheduleValidator.export_schedule_with_timings_v2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        #scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        #scheduleDecoder.export_schedule_with_timings_v3_hungarian(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        scheduleDecoder.export_schedule_with_timings_v3_hungarian_seq_refined(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+
+        #print(report)
+        if is_valid:
+            print(f"Schedule [{idx}] is Feasible!")
+            logging.info(f"Schedule [{idx}] is Feasible!")
+            #safe to calculate optimality gap
+            pass
+        else:
+            print(colored_background_str(r=255, g=0, b=5, text=f"Schedule [{idx}] is NOT Feasible!"))
+            logging.CRITICAL(f"Schedule [{idx}] is NOT Feasible!")
+            print(f"Activation Feasibility: {report['act_ok']} with stats {report['act_errs']}")
+
+            if not report["seq_ok"]:
+                print(f"Sequence Invalid: {report['seq_errs']}")
+
+def decode_autoregressive(model, loader, scheduleDecoder, device='cuda'):
+    """
+    True autoregressive decoding for inference.
+    Iteratively runs the GNN, picks the best valid operator-order assignment,
+    updates the dynamic state, and repeats until all orders are assigned 
+    or all operators terminate.
+    Estimates masks matching the expected format of the downstream export_schedule pipeline.
+    """
+
+    for batch_idx, batch in enumerate(loader):
+        print(f"Evaluating schedule_id: {batch.schedule_id[0]}")
+        batch = batch.to(device)
+        scheduleDecoder.export_autoregressive_schedule(model, batch, filename=f"predicted_{batch.schedule_id[0]}.json")
 
 if __name__ == "__main__":
     use_large_scale = False
+    use_autoregressive_model = True
 
     if use_large_scale:
         #init large-scale dataset
@@ -2480,13 +2751,19 @@ if __name__ == "__main__":
         'sequence': 0.0858
     }
 
-    model = MultiCriteriaGNNModel(
-        metadata=sample_data.metadata(),
-        hidden_dim=best_conf['hidden_dim'],
-        num_layers=3,
-        heads=best_conf['heads'],
-        dropout=best_conf['dropout']
-    ).to(device)
+    if use_autoregressive_model:
+        model = MultiCriteriaGNNModel_AutoRegressive(
+            hidden_dim=best_conf.get('hidden_dim', 64),
+            heads=best_conf.get('heads', 4),
+        ).to(device)
+    else:
+        model = MultiCriteriaGNNModel(
+            metadata=sample_data.metadata(),
+            hidden_dim=best_conf['hidden_dim'],
+            num_layers=3,
+            heads=best_conf['heads'],
+            dropout=best_conf['dropout']
+        ).to(device)
     
     model.load_model(device=device) #load pre-trained model weights
 
@@ -2515,44 +2792,10 @@ if __name__ == "__main__":
     
     print("Starting Schedule Validation - total batches:", len(loader))
 
-    idx = 0
-    for batch in loader:
-        batch = batch.to(device)
-        batch_dict = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
-
-        #op_embd = schedule_evaluator.diagnose_operator_embeddings(model, batch)
-
-        print(f"Evaluating schedule_id: {batch.schedule_id[0]}")
-        logging.info(f"Evaluating schedule_id: {batch.schedule_id[0]}")
-
-        if batch['order'].num_nodes < 2:
-            print(f"Schedule [{idx}] has less than 2 orders, skipping feasibility/export check.")
-            logging.info(f"Schedule [{idx}] has less than 2 orders, skipping feasibility/export check.")
-            continue
-
-        out = model(batch.x_dict, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict=batch_dict)
-
-        is_valid, report = scheduleDecoder.evaluate_full_feasibility(batch, out)
-
-        idx = idx + 1
-        #scheduleValidator.export_schedule_with_timings_v2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        #scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        #scheduleDecoder.export_schedule_with_timings_v3_hungarian(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        scheduleDecoder.export_schedule_with_timings_v3_hungarian_seq_refined(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-
-        #print(report)
-        if is_valid:
-            print(f"Schedule [{idx}] is Feasible!")
-            logging.info(f"Schedule [{idx}] is Feasible!")
-            #safe to calculate optimality gap
-            pass
-        else:
-            print(colored_background_str(r=255, g=0, b=5, text=f"Schedule [{idx}] is NOT Feasible!"))
-            logging.CRITICAL(f"Schedule [{idx}] is NOT Feasible!")
-            print(f"Activation Feasibility: {report['act_ok']} with stats {report['act_errs']}")
-
-            if not report["seq_ok"]:
-                print(f"Sequence Invalid: {report['seq_errs']}")
+    if use_autoregressive_model:
+        decode_autoregressive(model, loader, scheduleDecoder)
+    else:
+        decode_non_autoregressive(model, loader, scheduleDecoder)
 
     tail_insertions = str(scheduleDecoder.batch_tail_insertions).replace(",", ",\n")
     
