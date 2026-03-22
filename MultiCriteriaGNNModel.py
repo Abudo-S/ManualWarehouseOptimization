@@ -44,6 +44,8 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         assert heuristic_boost_factor >= 1.0,\
         "heuristic_boost_factor should be > 1.0"
         
+        print(f'metadata: {metadata}')
+
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.heads = heads
