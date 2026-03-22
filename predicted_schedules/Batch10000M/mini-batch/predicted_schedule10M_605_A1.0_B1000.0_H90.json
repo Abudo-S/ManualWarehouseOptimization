@@ -1,0 +1,30 @@
+{
+    "metadata": {
+        "num_orders": 1,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": "predicted_schedule10M_605_A1.0_B1000.0_H90",
+        "unassigned_orders": 0,
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 1,
+            "workload_mins": 21.01,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3887603,
+                        "start_time": 10.0,
+                        "finish_time": 21.01,
+                        "processing_duration": 11.01,
+                        "travel_duration": 10.0,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}

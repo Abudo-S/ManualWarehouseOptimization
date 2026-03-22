@@ -1,0 +1,125 @@
+{
+    "metadata": {
+        "num_orders": 9,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": "schedule10M_668_A1.0_B1000.0_H60",
+        "unassigned_orders": 0,
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3890422,
+                        "start_time": 10.0,
+                        "finish_time": 20.18,
+                        "processing_duration": 10.18,
+                        "travel_duration": 10.0,
+                        "successor": 3894641
+                    },
+                    {
+                        "mission_id": 3894641,
+                        "start_time": 30.32,
+                        "finish_time": 40.5,
+                        "processing_duration": 10.18,
+                        "travel_duration": 10.15,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 2,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3894889,
+                        "start_time": 10.0,
+                        "finish_time": 20.15,
+                        "processing_duration": 10.15,
+                        "travel_duration": 10.0,
+                        "successor": 3894751
+                    },
+                    {
+                        "mission_id": 3894751,
+                        "start_time": 30.28,
+                        "finish_time": 40.44,
+                        "processing_duration": 10.15,
+                        "travel_duration": 10.13,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 3,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3891074,
+                        "start_time": 11.5,
+                        "finish_time": 21.68,
+                        "processing_duration": 10.17,
+                        "travel_duration": 11.5,
+                        "successor": 3894653
+                    },
+                    {
+                        "mission_id": 3894653,
+                        "start_time": 31.91,
+                        "finish_time": 42.08,
+                        "processing_duration": 10.18,
+                        "travel_duration": 10.23,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 4,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3891086,
+                        "start_time": 11.5,
+                        "finish_time": 21.68,
+                        "processing_duration": 10.17,
+                        "travel_duration": 11.5,
+                        "successor": 3894663
+                    },
+                    {
+                        "mission_id": 3894663,
+                        "start_time": 31.91,
+                        "finish_time": 42.08,
+                        "processing_duration": 10.18,
+                        "travel_duration": 10.23,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 5,
+            "assigned_orders_count": 1,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3891094,
+                        "start_time": 11.5,
+                        "finish_time": 21.68,
+                        "processing_duration": 10.17,
+                        "travel_duration": 11.5,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}

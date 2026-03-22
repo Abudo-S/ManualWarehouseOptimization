@@ -3,7 +3,7 @@
         "num_orders": 3,
         "num_operators": 10,
         "valid": true,
-        "schedule_id": "schedule10M_660_A1.0_B1000.0_H120",
+        "schedule_id": "predicted_schedule10M_660_A1.0_B1000.0_H120",
         "unassigned_orders": 0,
         "horizon_valid": true,
         "horizon_violations": []
@@ -12,6 +12,7 @@
         {
             "operator_id": 1,
             "assigned_orders_count": 3,
+            "workload_mins": 66.67,
             "routes": [
                 [
                     {
