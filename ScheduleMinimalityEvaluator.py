@@ -123,7 +123,7 @@ class ScheduleMinimalityEvaluator:
             alpha = item['alpha']
             beta = item['beta']
             h_fixed = item['h_fixed']
-
+                
             with open(pred_path) as f:
                 pred = json.load(f)
 
@@ -156,11 +156,13 @@ class ScheduleMinimalityEvaluator:
 
             mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
             mission_batch_df_scaled['CD_MISSION'] = mission_batch_df_scaled['CD_MISSION'].astype(str).str.replace(',', '', regex=False).astype(int)
+            BASE_MISSION = [0 for _ in range(len(mission_batch_df_scaled.columns))]
+            df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
             mission_batch_travel_df = pd.read_csv(batch_travel_path)[mission_batch_travel_features]
 
             parameter_data_loader = ParameterDataLoader(
                 mission_batch_df_scaled,
-                mission_batch_df_scaled.copy(),
+                df_missions_batch_with_base,
                 mission_batch_travel_df,
                 fork_lifts_df,
                 udc_types_df,
@@ -337,11 +339,13 @@ class ScheduleMinimalityEvaluator:
 
             mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
             mission_batch_df_scaled['CD_MISSION'] = mission_batch_df_scaled['CD_MISSION'].astype(str).str.replace(',', '', regex=False).astype(int)
+            BASE_MISSION = [0 for _ in range(len(mission_batch_df_scaled.columns))]
+            df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
             mission_batch_travel_df = pd.read_csv(batch_travel_path)[mission_batch_travel_features]
 
             parameter_data_loader = ParameterDataLoader(
                 mission_batch_df_scaled,
-                mission_batch_df_scaled.copy(),
+                df_missions_batch_with_base,
                 mission_batch_travel_df,
                 fork_lifts_df,
                 udc_types_df,
@@ -412,12 +416,12 @@ class ScheduleMinimalityEvaluator:
 
 if __name__ == "__main__":
     #mini-batch
-    # evaluator = ScheduleMinimalityEvaluator(mission_batch_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/batch",
-    #                                         mission_batch_travel_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/travel",
-    #                                         predicted_schedule_dir=PREDICTED_SCHEDULE_DIR, 
-    #                                         is_mini_batch=True)
+    evaluator = ScheduleMinimalityEvaluator(mission_batch_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/batch",
+                                            mission_batch_travel_dir=f"./datasets/{LARGE_SCALE_BATCH_NAME}/travel",
+                                            predicted_schedule_dir=PREDICTED_SCHEDULE_DIR, 
+                                            is_mini_batch=True)
     
-    evaluator = ScheduleMinimalityEvaluator()
+    #evaluator = ScheduleMinimalityEvaluator()
     
     total_flow_time_results = evaluator.evaluate_total_flow_time_minimality()
     activation_results = evaluator.evaluate_activation_minimality(total_flow_time_results)
