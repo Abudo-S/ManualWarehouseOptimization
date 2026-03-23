@@ -45,7 +45,9 @@ MAX_ITERATIONS_PER_ORDER = 10 #max attempts to find a feasible operator for an o
 #default threshold for binary classification accurcy like logistic regression after sigmoid
 #need to be tuned if the classes are imbalanced (can be relevated from classification report / roc curve)
 CLASSIFICATION_THRESHOLD = 0.05
+TEMPERATURE_SCALING_FACTOR = 0.001
 
+os.makedirs(os.path.dirname('logs/'), exist_ok=True)
 logging.basicConfig(
     filename=f'logs/schedule_decoder_{int(time.time())}.log', 
     filemode='w',
@@ -1842,11 +1844,23 @@ class ScheduleDecoder:
             return True, []
 
         h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
+        num_orders = batch['order'].num_nodes
+        num_ops = batch['operator'].num_nodes
 
         #prepare probs of each head
         p_act = out['activation'].view(-1).cpu().numpy()
         p_assign = out['assignment'].view(-1).cpu().numpy()
         p_seq = out['sequence'].view(-1).cpu().numpy()
+
+        #adaptive thresholding (temperature scaling)
+        #smooths out flat probabilities in large-scale graphs
+        temperature = 1.0 + TEMPERATURE_SCALING_FACTOR * num_orders
+        
+        #safely inverse sigmoid to approximate logits, scale, and re-apply sigmoid
+        p_assign_clipped = np.clip(p_assign, 1e-8, 1 - 1e-8)
+        raw_logits = np.log(p_assign_clipped / (1 - p_assign_clipped))
+        scaled_logits = raw_logits / temperature
+        p_assign = 1 / (1 + np.exp(-scaled_logits))
 
         #edge indices (cpu for easier list processing)
         assign_idx = batch.edge_index_dict[('operator', 'assign', 'order')].cpu().numpy()
@@ -1891,8 +1905,6 @@ class ScheduleDecoder:
 
         all_mission_ids = batch['order'].global_id.cpu().tolist()
         all_operator_ids = batch['operator'].global_id.cpu().tolist()
-        num_orders = batch['order'].num_nodes
-        num_ops = batch['operator'].num_nodes
 
         #activation
         active_ops = set(np.where(p_act >= self.act_threshold)[0])
@@ -2569,7 +2581,7 @@ def decode_autoregressive(model, loader, scheduleDecoder, device='cuda'):
 
 if __name__ == "__main__":
     use_large_scale = False
-    use_autoregressive_model = True
+    use_autoregressive_model = False
 
     if use_large_scale:
         #init large-scale dataset
@@ -2793,9 +2805,9 @@ if __name__ == "__main__":
     print("Starting Schedule Validation - total batches:", len(loader))
 
     if use_autoregressive_model:
-        decode_autoregressive(model, loader, scheduleDecoder)
+        decode_autoregressive(model, loader, scheduleDecoder, device)
     else:
-        decode_non_autoregressive(model, loader, scheduleDecoder)
+        decode_non_autoregressive(model, loader, scheduleDecoder, device)
 
     tail_insertions = str(scheduleDecoder.batch_tail_insertions).replace(",", ",\n")
     
