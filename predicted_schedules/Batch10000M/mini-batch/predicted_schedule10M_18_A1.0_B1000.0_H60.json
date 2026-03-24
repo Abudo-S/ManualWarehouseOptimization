@@ -3,7 +3,7 @@
         "num_orders": 3,
         "num_operators": 10,
         "valid": true,
-        "schedule_id": "predicted_schedule10M_18_A1.0_B1000.0_H60",
+        "schedule_id": "schedule10M_18_A1.0_B1000.0_H60",
         "unassigned_orders": 0,
         "horizon_valid": true,
         "horizon_violations": []
@@ -12,7 +12,6 @@
         {
             "operator_id": 1,
             "assigned_orders_count": 2,
-            "workload_mins": 42.32,
             "routes": [
                 [
                     {
@@ -25,8 +24,8 @@
                     },
                     {
                         "mission_id": 3881330,
-                        "start_time": 31.98,
-                        "finish_time": 42.32,
+                        "start_time": 31.99,
+                        "finish_time": 42.33,
                         "processing_duration": 10.34,
                         "travel_duration": 10.33,
                         "successor": null
@@ -37,7 +36,6 @@
         {
             "operator_id": 2,
             "assigned_orders_count": 1,
-            "workload_mins": 21.58,
             "routes": [
                 [
                     {
