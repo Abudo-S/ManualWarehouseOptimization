@@ -404,18 +404,44 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         #act_probs_1d = out_activation.squeeze().detach() #detach to avoid backpropagation towards activation head 
         act_probs_1d = out_activation.squeeze()
 
-        #extract the probability vectors for source (i) and destination (j) orders
-        probs_i = assign_prob_matrix[src_idx] #[num_seq_edges, num_ops]
-        probs_j = assign_prob_matrix[dst_idx] #[num_seq_edges, num_ops]
+        #Warning: single operations create a dense tensor of shape, so "CUDA out of memory" OOM error
+        # #extract the probability vectors for source (i) and destination (j) orders
+        # probs_i = assign_prob_matrix[src_idx] #[num_seq_edges, num_ops]
+        # probs_j = assign_prob_matrix[dst_idx] #[num_seq_edges, num_ops]
         
-        #compute the "shared operator score" 
-        #sum of element-wise multiplication across ops
-        #it yields a high value only if both orders have a high probability for the same operator.
-        shared_op_score = torch.sum(probs_i * probs_j, dim=1, keepdim=True) #[num_seq_edges, 1]
+        # #compute the "shared operator score" 
+        # #sum of element-wise multiplication across ops
+        # #it yields a high value only if both orders have a high probability for the same operator.
+        # shared_op_score = torch.sum(probs_i * probs_j, dim=1, keepdim=True) #[num_seq_edges, 1]
 
-        #compute active shared operator score (aActivation coupling) to avoid the possibile vanishing activation MLPS trough assignment head
-        #we weight the assignment overlap by the activation probability of the operator
-        active_shared_score = torch.sum(probs_i * probs_j * act_probs_1d, dim=1, keepdim=True)
+        # #compute active shared operator score (activation coupling) to avoid the possibile vanishing activation MLPS trough assignment head
+        # #we weight the assignment overlap by the activation probability of the operator
+        # #active_shared_score = torch.sum(probs_i * probs_j * act_probs_1d, dim=1, keepdim=True)
+
+        #Str- chunked extraction to avoid massive OOM on [num_seq_edges, num_ops] intermediate tensors
+        num_seq_edges = src_idx.size(0)
+        chunk_size = 50000  #safe boundary that consumes <100MB VRAM per chunk
+        
+        shared_op_score_list = []
+        active_shared_score_list = []
+        
+        for start_idx in range(0, num_seq_edges, chunk_size):
+            end_idx = min(start_idx + chunk_size, num_seq_edges)
+            
+            #extract probability chunks
+            probs_i_chunk = assign_prob_matrix[src_idx[start_idx:end_idx]]
+            probs_j_chunk = assign_prob_matrix[dst_idx[start_idx:end_idx]]
+            
+            #compute scores for the chunk
+            shared_chunk = torch.sum(probs_i_chunk * probs_j_chunk, dim=1, keepdim=True)
+            active_chunk = torch.sum(probs_i_chunk * probs_j_chunk * act_probs_1d, dim=1, keepdim=True)
+            
+            shared_op_score_list.append(shared_chunk)
+            active_shared_score_list.append(active_chunk)
+            
+        #concatenate back into [num_seq_edges, 1] tensors
+        shared_op_score = torch.cat(shared_op_score_list, dim=0)
+        active_shared_score = torch.cat(active_shared_score_list, dim=0)
 
         #apply head coupling dropout
         shared_op_score = self.head_coupling_dropout(shared_op_score)
