@@ -180,7 +180,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         op_physical = raw_op_features[:, :7]
         op_pe = raw_op_features[:, 7:]
 
-        # NEW: Save raw order coordinates (X and Y) before projection
+        #save raw order coordinates (X and Y) before projection
         raw_ord_x = x_dict['order'][:, 4]
         raw_ord_y = x_dict['order'][:, 5]
 
@@ -375,7 +375,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         
         ord_emb_i = x_dict['order'][src_idx]
         ord_emb_j = x_dict['order'][dst_idx]
-        edge_attr = edge_attr_dict[('order', 'to', 'order')] #travel Time
+        edge_attr = edge_attr_dict[('order', 'to', 'order')] #travel time
         
         if edge_attr.dim() == 1:
             edge_attr = edge_attr.unsqueeze(1)
