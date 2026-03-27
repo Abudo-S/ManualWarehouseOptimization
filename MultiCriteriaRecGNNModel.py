@@ -44,7 +44,7 @@ class MultiCriteriaRecGNNModel(torch.nn.Module):
         1- The Encoder (Static): The GNN runs exactly once at the beginning. It looks at the warehouse and creates fixed embeddings for all orders.
         2- The Decoder (Recurrent): a GRUCell specifically for the operators.
             - the hidden_state of the GRU represents the operator's current status (location, remaining capacity, etc.).
-            - when an operator finishes an order, you feed that order's embedding into the GRU. The GRU updates the operator's hidden_state.
+            - when an operator finishes an order, we feed that order's embedding into the GRU. The GRU updates the operator's hidden_state.
             - we use new hidden_state to predict the next assignment.
         '''
         super().__init__()
@@ -193,7 +193,20 @@ class MultiCriteriaRecGNNModel(torch.nn.Module):
         ops_per_batch.index_add_(0, op_batch, torch.ones_like(op_batch, dtype=torch.float))
         
         min_ops_needed = (total_workload_per_batch / (u[:, 2] + 1e-6)) * self.heuristic_boost_factor
-        op_demand_feature = (min_ops_needed / ops_per_batch.clamp(min=1.0))[op_batch]
+        #op_demand_feature = (min_ops_needed / ops_per_batch.clamp(min=1.0))[op_batch]
+        
+        #calculate an activation threshold for each operator based on its monotonic id.
+        op_ordinal_index = monotonic_id.squeeze() * ops_per_batch[op_batch]
+        min_ops_broadcast = min_ops_needed[op_batch]
+        
+        #soft demand feature:
+        #if ordinal < min_ops, it outputs a positive value representing "how much" it belongs in the active set.
+        #if ordinal >= min_ops, it strongly outputs -1.0 to keep it inactive.
+        op_demand_feature = torch.where(
+            op_ordinal_index < min_ops_broadcast,
+            1.0 - (op_ordinal_index / min_ops_broadcast.clamp(min=1.0)), #decays from 1.0 to 0.0 smoothly
+            -1.0 #hard cutoff for unneeded operators
+        )
 
         #activation head (using new GRU state + op_pe)
         op_feat_final = torch.cat([new_op_hidden, u_ops, op_demand_feature.unsqueeze(1), monotonic_id, op_pe], dim=1)
@@ -229,38 +242,45 @@ class MultiCriteriaRecGNNModel(torch.nn.Module):
         out_assign = out_assign * valid_assign_mask
 
         #sequence head
-        src_seq, dst_seq = edge_index_dict[('order', 'to', 'order')]
-        ord_emb_i = static_embs['order'][src_seq]
-        ord_emb_j = static_embs['order'][dst_seq]
-        seq_edge_attr = edge_attr_dict[('order', 'to', 'order')]
-        if seq_edge_attr.dim() == 1: seq_edge_attr = seq_edge_attr.unsqueeze(1)
+        src_seq, dst_seq = edge_index_dict.get(('order', 'to', 'order'), 
+                                               (torch.empty(0, dtype=torch.long, device=new_op_hidden.device),
+                                                torch.empty(0, dtype=torch.long, device=new_op_hidden.device)))
         
-        u_seq_edges = u[batch_dict['order'][src_seq]]
-
-        assign_prob_matrix = torch.zeros((static_embs['order'].size(0), new_op_hidden.size(0)), device=new_op_hidden.device)
-        assign_prob_matrix[dst_idx, src_idx] = out_assign.squeeze().detach()
-        act_probs_1d = out_activation.squeeze().detach()
-
-        chunk_size = 50000 
-        shared_op_list, active_shared_list = [], []
-
-        for start in range(0, src_seq.size(0), chunk_size):
-            end = min(start + chunk_size, src_seq.size(0))
-            probs_i = assign_prob_matrix[src_seq[start:end]]
-            probs_j = assign_prob_matrix[dst_seq[start:end]]
+        #if there are no sequence edges in the batch, return an empty sequence prediction
+        if src_seq.size(0) == 0:
+            out_seq = torch.empty((0, 1), device=new_op_hidden.device)
+        else:
+            ord_emb_i = static_embs['order'][src_seq]
+            ord_emb_j = static_embs['order'][dst_seq]
+            seq_edge_attr = edge_attr_dict[('order', 'to', 'order')]
+            if seq_edge_attr.dim() == 1: seq_edge_attr = seq_edge_attr.unsqueeze(1)
             
-            shared_op_list.append(torch.sum(probs_i * probs_j, dim=1, keepdim=True))
-            active_shared_list.append(torch.sum(probs_i * probs_j * act_probs_1d, dim=1, keepdim=True))
+            u_seq_edges = u[batch_dict['order'][src_seq]]
 
-        shared_op_score = self.head_coupling_dropout(torch.cat(shared_op_list, dim=0))
-        active_shared_score = self.head_coupling_dropout(torch.cat(active_shared_list, dim=0))
+            assign_prob_matrix = torch.zeros((static_embs['order'].size(0), new_op_hidden.size(0)), device=new_op_hidden.device)
+            assign_prob_matrix[dst_idx, src_idx] = out_assign.squeeze().detach()
+            act_probs_1d = out_activation.squeeze().detach()
 
-        seq_input = torch.cat([ord_emb_i, ord_emb_j, u_seq_edges, seq_edge_attr, shared_op_score, active_shared_score], dim=1)
-        out_seq = torch.sigmoid(self.seq_head(seq_input))
+            chunk_size = 50000 
+            shared_op_list, active_shared_list = [], []
 
-        #sequence masking
-        valid_seq_mask = ((1.0 - is_assigned_flag[src_seq]) * (1.0 - is_assigned_flag[dst_seq]))
-        out_seq = out_seq * valid_seq_mask
+            for start in range(0, src_seq.size(0), chunk_size):
+                end = min(start + chunk_size, src_seq.size(0))
+                probs_i = assign_prob_matrix[src_seq[start:end]]
+                probs_j = assign_prob_matrix[dst_seq[start:end]]
+                
+                shared_op_list.append(torch.sum(probs_i * probs_j, dim=1, keepdim=True))
+                active_shared_list.append(torch.sum(probs_i * probs_j * act_probs_1d, dim=1, keepdim=True))
+
+            shared_op_score = self.head_coupling_dropout(torch.cat(shared_op_list, dim=0))
+            active_shared_score = self.head_coupling_dropout(torch.cat(active_shared_list, dim=0))
+
+            seq_input = torch.cat([ord_emb_i, ord_emb_j, u_seq_edges, seq_edge_attr, shared_op_score, active_shared_score], dim=1)
+            out_seq = torch.sigmoid(self.seq_head(seq_input))
+
+            #sequence masking
+            valid_seq_mask = ((1.0 - is_assigned_flag[src_seq]) * (1.0 - is_assigned_flag[dst_seq]))
+            out_seq = out_seq * valid_seq_mask
 
         return new_op_hidden, {
             'activation': out_activation, 
