@@ -308,16 +308,26 @@ class ScheduleEvaluator:
         op_batch = ground_truth['operator'].batch if hasattr(ground_truth['operator'], 'batch') else torch.zeros(num_ops_total, dtype=torch.long, device=pred_assign.device)
         h_fixed_per_op = ground_truth.u[op_batch, 2]
 
+        #apply a 5% buffer (0.95) so the exponential curve gets steep right before h_fixed.
+        h_fixed_per_op_margin = h_fixed_per_op * 0.95
+
         #penalize workload that exceeds h_fixed using relu (0 if workload < h_fixed)
-        capacity_violations = torch.relu(expected_workloads - h_fixed_per_op)
+        #capacity_violations = torch.relu(expected_workloads - h_fixed_per_op_margin)
+        #an exponential penalty with log-barrier function as the expected workload approaches h_fixed. 
+        #It pushes the model away from the boundary before it crosses it.
+        capacity_violations = F.softplus(expected_workloads - h_fixed_per_op_margin)
 
         #only average the penalty over operators that exceed capacity
-        active_violations = capacity_violations > 0
-        if active_violations.sum() > 0:
-            capacity_penalty = capacity_violations.sum() / active_violations.sum()
-        else:
-            capacity_penalty = torch.tensor(0.0, device=pred_assign.device)
+        #helps to activate new operators in case of capacity violations, but would it help in right assignments?
+        # active_violations = capacity_violations > 0
+        # if active_violations.sum() > 0:
+        #     capacity_penalty = capacity_violations.sum() / active_violations.sum()
+        # else:
+        #     capacity_penalty = torch.tensor(0.0, device=pred_assign.device)
 
+        #mean over all operators to prevent perverse gradients
+        capacity_penalty = capacity_violations.sum()
+        
         #weighted sum
         #Note that alpha/beta need to be scaled down if they are large (e.g. 100) to prevent explosion
         #or rely on the optimizer (Adam) to handle scaling.
