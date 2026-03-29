@@ -15,6 +15,7 @@ from scipy.optimize import linear_sum_assignment
 from torch_geometric.loader import DataLoader
 from ScheduleEvaluator import ScheduleEvaluator
 from MultiCriteriaGNNModel import MultiCriteriaGNNModel
+from MultiCriteriaRecGNNModel import MultiCriteriaRecGNNModel
 from MultiCriteriaGNNModel_AutoRegressive import MultiCriteriaGNNModel_AutoRegressive
 from GnnScheduleDataset import GnnScheduleDataset
 
@@ -2311,6 +2312,422 @@ class ScheduleDecoder:
             logging.info(f"Schedule exported with name: {filename}")
 
     @torch.no_grad()
+    def export_schedule_with_timings_v3_refined(self, model, batch, out, filename='schedule.json', use_extra_ops=False, n_extra_ops_to_use=0):
+        """
+            Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
+            Activation: select active operators based on model probabilities.
+            Assignment: greedily assign orders only to active operators based on assignment probs.
+            Sequence: route assigned orders per operator using sequence probs and time constraints.
+            If an order fails to route due to H_fixed, it falls back to the next best 
+            activation-assignment probability bucket. If all active ops are full, it falls back to inactive ops.
+            if use_extra_ops is True and there're unassigned order, 
+            activates additional operator(s) recursively until all operators are active.
+            Includes an iterative dynamic reprediction strategy for tail-insertions.
+            Includes a completely non-destructive Makespan Minimization Refinement pass.
+            """
+        global_time_scale = 1.0
+        if hasattr(batch, 'global_scale_factor'):
+            global_time_scale = batch.global_scale_factor.mean().item()
+        if not hasattr(batch, 'u') or batch.u is None:
+            return (True, [])
+        h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
+        num_orders = batch['order'].num_nodes
+        num_ops = batch['operator'].num_nodes
+        p_act = out['activation'].view(-1).cpu().numpy()
+        p_assign = out['assignment'].view(-1).cpu().numpy()
+        p_seq = out['sequence'].view(-1).cpu().numpy()
+        assign_idx = batch['operator', 'assign', 'order'].edge_index.cpu().numpy()
+        assign_attr = batch['operator', 'assign', 'order'].edge_attr.cpu().numpy()
+        seq_idx = batch['order', 'to', 'order'].edge_index.cpu().numpy()
+        seq_attr = batch['order', 'to', 'order'].edge_attr.cpu().numpy()
+        proc_time_map = {}
+        base_travel_map = {}
+        for i in range(assign_idx.shape[1]):
+            op, order = int(assign_idx[0, i]), int(assign_idx[1, i])
+            proc_time_map[op, order] = float(assign_attr[i][0]) * global_time_scale
+            val_travel = float(assign_attr[i][1]) if assign_attr.shape[1] > 1 else 0.0
+            base_travel_map[op, order] = val_travel * global_time_scale
+        travel_time_map = {}
+        for i in range(seq_idx.shape[1]):
+            val = float(seq_attr[i][0]) if seq_attr.ndim > 1 else float(seq_attr[i])
+            travel_time_map[int(seq_idx[0, i]), int(seq_idx[1, i])] = val * global_time_scale
+        if travel_time_map:
+            avg_travel_time = sum(travel_time_map.values()) / len(travel_time_map)
+            if avg_travel_time == 0:
+                avg_travel_time = 1.0
+        else:
+            avg_travel_time = 1.0
+        seq_adj = {}
+        for i in range(seq_idx.shape[1]):
+            u, v = (int(seq_idx[0, i]), int(seq_idx[1, i]))
+            prob = float(p_seq[i])
+            if u not in seq_adj:
+                seq_adj[u] = []
+            seq_adj[u].append((v, prob))
+        for u in seq_adj:
+            seq_adj[u].sort(key=lambda x: x[1], reverse=True)
+        all_mission_ids = batch['order'].global_id.cpu().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().tolist()
+        num_orders = batch['order'].num_nodes
+        num_ops = batch['operator'].num_nodes
+        active_ops = set(np.where(p_act >= self.act_threshold)[0])
+        if use_extra_ops:
+            inactive_ops = [op for op in range(num_ops) if op not in active_ops]
+            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
+            for best_inactive_op in best_inactive_ops:
+                active_ops.add(best_inactive_op)
+        if not active_ops:
+            k = max(1, int(num_ops * 0.3))
+            active_ops = set(np.argsort(p_act)[-k:].tolist())
+        total_processing_time = 0.0
+        for o in range(num_orders):
+            avg_proc = np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
+            total_processing_time += avg_proc
+
+        def get_bucket(prob):
+            return round(float(prob), 3)
+        order_preferences = {o: {} for o in range(num_orders)}
+        for i in range(p_assign.shape[0]):
+            op = int(assign_idx[0, i])
+            order = int(assign_idx[1, i])
+            prob = float(p_assign[i])
+            if prob > 0.001:
+                b = get_bucket(prob)
+                if b not in order_preferences[order]:
+                    order_preferences[order][b] = []
+                order_preferences[order][b].append(op)
+        order_bucket_state = {o: 0 for o in range(num_orders)}
+        order_tried_ops = {o: set() for o in range(num_orders)}
+        order_sorted_buckets = {}
+        for o in range(num_orders):
+            order_sorted_buckets[o] = sorted(order_preferences[o].keys(), reverse=True)
+            all_ops = list(range(num_ops))
+            seen = set((op for ops in order_preferences[o].values() for op in ops))
+            unseen = [op for op in all_ops if op not in seen]
+            if unseen:
+                order_preferences[o][0.0] = unseen
+                order_sorted_buckets[o].append(0.0)
+        orders_to_assign = set(range(num_orders))
+        final_op_routes = {op: [] for op in range(num_ops)}
+        MAX_ITERATIONS = num_orders * num_ops
+        iteration = 0
+        while orders_to_assign and iteration < MAX_ITERATIONS:
+            iteration += 1
+            current_clusters = {op: set() for op in range(num_ops)}
+            ops_to_process = set()
+            op_loads = {op: len(route) for op, route in final_op_routes.items()}
+            dead_orders = set()
+            for o in list(orders_to_assign):
+                b_idx = order_bucket_state[o]
+                found_candidate = False
+                while b_idx < len(order_sorted_buckets[o]):
+                    bucket_val = order_sorted_buckets[o][b_idx]
+                    candidates = order_preferences[o][bucket_val]
+                    valid_candidates = [c for c in candidates if c not in order_tried_ops[o]]
+                    if valid_candidates:
+                        valid_candidates.sort(key=lambda c: (c in active_ops, p_act[c], op_loads.get(c, 0), -c), reverse=True)
+                        best_op = valid_candidates[0]
+                        current_clusters[best_op].add(o)
+                        ops_to_process.add(best_op)
+                        order_tried_ops[o].add(best_op)
+                        found_candidate = True
+                        break
+                    else:
+                        b_idx += 1
+                        order_bucket_state[o] = b_idx
+                if not found_candidate:
+                    dead_orders.add(o)
+            for o in dead_orders:
+                orders_to_assign.remove(o)
+            if not ops_to_process:
+                break
+            for op in ops_to_process:
+                existing = {s['_internal'] for s in final_op_routes[op]}
+                current_clusters[op].update(existing)
+            rejected_orders = set()
+            for op in ops_to_process:
+                orders = list(current_clusters[op])
+                if not orders:
+                    continue
+
+                def get_prob(o):
+                    mask = (assign_idx[0] == op) & (assign_idx[1] == o)
+                    idx_array = np.where(mask)[0]
+                    return float(p_assign[idx_array[0]]) if len(idx_array) > 0 else 0.0
+                orders.sort(key=lambda o: get_prob(o), reverse=True)
+                unvisited = set(orders)
+                route_steps = []
+                current_time = 0.0
+                curr = None
+                for cand in orders:
+                    t_travel = base_travel_map.get((op, cand), avg_travel_time)
+                    t_proc = proc_time_map.get((op, cand), 0.0)
+                    if t_proc + t_travel <= h_fixed_mins:
+                        curr = cand
+                        route_steps.append({'mission_id': all_mission_ids[curr], '_internal': curr, 'start_time': round(t_travel, 2), 'finish_time': round(t_travel + t_proc, 2), 'processing_duration': round(t_proc, 2), 'travel_duration': round(t_travel, 2), 'successor': None})
+                        current_time = t_proc + t_travel
+                        unvisited.discard(curr)
+                        break
+                if curr is not None:
+                    while unvisited:
+                        best_next = None
+                        best_metrics = None
+                        if curr in seq_adj:
+                            for neighbor, _ in seq_adj[curr]:
+                                if neighbor in unvisited:
+                                    t_travel = travel_time_map.get((curr, neighbor), 0.0)
+                                    t_proc = proc_time_map.get((op, neighbor), 0.0)
+                                    finish = current_time + t_travel + t_proc
+                                    if finish <= h_fixed_mins:
+                                        best_next = neighbor
+                                        best_metrics = (t_travel, t_proc, finish)
+                                        break
+                        if not best_next:
+                            for neighbor in unvisited:
+                                t_travel = travel_time_map.get((curr, neighbor), avg_travel_time)
+                                if t_travel == 0.0:
+                                    t_travel = avg_travel_time
+                                t_proc = proc_time_map.get((op, neighbor), 0.0)
+                                finish = current_time + t_travel + t_proc
+                                if finish <= h_fixed_mins:
+                                    best_next = neighbor
+                                    best_metrics = (t_travel, t_proc, finish)
+                                    break
+                        if best_next:
+                            t, p, f = best_metrics
+                            route_steps[-1]['successor'] = all_mission_ids[best_next]
+                            route_steps.append({'mission_id': all_mission_ids[best_next], '_internal': best_next, 'start_time': round(current_time + t, 2), 'finish_time': round(f, 2), 'processing_duration': round(p, 2), 'travel_duration': round(t, 2), 'successor': None})
+                            current_time = f
+                            curr = best_next
+                            unvisited.discard(curr)
+                        else:
+                            break
+                final_op_routes[op] = route_steps
+                assigned_in_route = {s['_internal'] for s in route_steps}
+                for o in orders:
+                    if o not in assigned_in_route:
+                        rejected_orders.add(o)
+            orders_to_assign = rejected_orders
+        rejected_orders = orders_to_assign
+        if rejected_orders:
+            print(f'Tail-insertion pass: {len(rejected_orders)} orders still unassigned')
+            logging.info(f'Tail-insertion pass: {len(rejected_orders)} orders still unassigned')
+            predicted_schedule_name = filename.replace('.json', '')
+            if predicted_schedule_name not in self.batch_tail_insertions.keys():
+                self.batch_tail_insertions[predicted_schedule_name] = len(rejected_orders)
+            tail_iter = 0
+            while rejected_orders:
+                tail_iter += 1
+                print(f'Iterative Repair: Reprediction iteration {tail_iter}, {len(rejected_orders)} remaining')
+                logging.info(f'Iterative Repair: Reprediction iteration {tail_iter}, {len(rejected_orders)} remaining')
+                tail_orders = list(rejected_orders)
+                viable_assign_matrix = {}
+                for o in tail_orders:
+                    for op in active_ops:
+                        route = final_op_routes.get(op, [])
+                        curr_finish = route[-1]['finish_time'] if route else 0.0
+                        last_node = route[-1]['_internal'] if route else None
+                        if last_node is not None:
+                            t_travel = travel_time_map.get((last_node, o), avg_travel_time)
+                        else:
+                            t_travel = base_travel_map.get((op, o), avg_travel_time)
+                        t_proc = proc_time_map.get((op, o), 0.0)
+                        if curr_finish + t_travel + t_proc <= h_fixed_mins:
+                            if op not in viable_assign_matrix:
+                                viable_assign_matrix[op] = []
+                            viable_assign_matrix[op].append(o)
+                if not viable_assign_matrix:
+                    print('No viable combinations remain for currently active operators; breaking tail loop to allow extra ops activation.')
+                    logging.info('No viable combinations remain for currently active operators; breaking tail loop to allow extra ops activation.')
+                    break
+                new_edge_index_dict = copy.deepcopy(batch.edge_index_dict)
+                new_edge_attr_dict = copy.deepcopy(batch.edge_attr_dict)
+                assign_idx_cpu = new_edge_index_dict['operator', 'assign', 'order'].cpu().numpy()
+                assign_attr_cpu = new_edge_attr_dict['operator', 'assign', 'order'].cpu().numpy()
+                valid_edge_mask = []
+                for idx in range(assign_idx_cpu.shape[1]):
+                    op_id = int(assign_idx_cpu[0, idx])
+                    order_id = int(assign_idx_cpu[1, idx])
+                    if order_id in rejected_orders and op_id in viable_assign_matrix and (order_id in viable_assign_matrix[op_id]):
+                        valid_edge_mask.append(True)
+                        route = final_op_routes.get(op_id, [])
+                        last_node = route[-1]['_internal'] if route else None
+                        if last_node is not None:
+                            t_travel = travel_time_map.get((last_node, order_id), avg_travel_time)
+                        else:
+                            t_travel = base_travel_map.get((op_id, order_id), avg_travel_time)
+                        assign_attr_cpu[idx, 1] = t_travel / global_time_scale
+                    else:
+                        valid_edge_mask.append(False)
+                valid_edge_mask = np.array(valid_edge_mask)
+                new_edge_index_dict['operator', 'assign', 'order'] = torch.tensor(assign_idx_cpu[:, valid_edge_mask], device=device)
+                new_edge_attr_dict['operator', 'assign', 'order'] = torch.tensor(assign_attr_cpu[valid_edge_mask], device=device)
+                if ('order', 'rev_assign', 'operator') in new_edge_index_dict:
+                    rev_idx_cpu = new_edge_index_dict['order', 'rev_assign', 'operator'].cpu().numpy()
+                    rev_attr_cpu = new_edge_attr_dict['order', 'rev_assign', 'operator'].cpu().numpy()
+                    rev_mask = []
+                    for idx in range(rev_idx_cpu.shape[1]):
+                        order_id = int(rev_idx_cpu[0, idx])
+                        op_id = int(rev_idx_cpu[1, idx])
+                        if order_id in rejected_orders and op_id in viable_assign_matrix and (order_id in viable_assign_matrix[op_id]):
+                            rev_mask.append(True)
+                            route = final_op_routes.get(op_id, [])
+                            last_node = route[-1]['_internal'] if route else None
+                            if last_node is not None:
+                                t_travel = travel_time_map.get((last_node, order_id), avg_travel_time)
+                            else:
+                                t_travel = base_travel_map.get((op_id, order_id), avg_travel_time)
+                            rev_attr_cpu[idx, 1] = t_travel / global_time_scale
+                        else:
+                            rev_mask.append(False)
+                    rev_mask = np.array(rev_mask)
+                    new_edge_index_dict['order', 'rev_assign', 'operator'] = torch.tensor(rev_idx_cpu[:, rev_mask], device=device)
+                    new_edge_attr_dict['order', 'rev_assign', 'operator'] = torch.tensor(rev_attr_cpu[rev_mask], device=device)
+                temp_batch = copy.copy(batch)
+                temp_batch.edge_index_dict = new_edge_index_dict
+                temp_batch.edge_attr_dict = new_edge_attr_dict
+                if hasattr(temp_batch, '_edge_store_dict'):
+                    for key in new_edge_index_dict:
+                        temp_batch[key].edge_index = new_edge_index_dict[key]
+                        temp_batch[key].edge_attr = new_edge_attr_dict[key]
+                repred_out = model(temp_batch)
+                rep_p_assign = repred_out['assignment'].view(-1).detach().cpu().numpy()
+                rep_assign_idx = temp_batch['operator', 'assign', 'order'].edge_index.cpu().numpy()
+                assigned_this_iter = set()
+                best_candidates = {}
+                for idx in range(rep_assign_idx.shape[1]):
+                    op_id = int(rep_assign_idx[0, idx])
+                    order_id = int(rep_assign_idx[1, idx])
+                    score = float(rep_p_assign[idx])
+                    if order_id not in best_candidates or score > best_candidates[order_id][1]:
+                        best_candidates[order_id] = (op_id, score)
+                for order_id, (best_op, _) in best_candidates.items():
+                    route = final_op_routes.get(best_op, [])
+                    curr_finish = route[-1]['finish_time'] if route else 0.0
+                    last_node = route[-1]['_internal'] if route else None
+                    if last_node is not None:
+                        best_t_travel = travel_time_map.get((last_node, order_id), avg_travel_time)
+                    else:
+                        best_t_travel = base_travel_map.get((best_op, order_id), avg_travel_time)
+                    best_t_proc = proc_time_map.get((best_op, order_id), 0.0)
+                    best_finish = curr_finish + best_t_travel + best_t_proc
+                    if best_finish <= h_fixed_mins:
+                        travel_start_time = route[-1]['finish_time'] if route else 0.0
+                        step = {'mission_id': all_mission_ids[order_id], '_internal': order_id, 'start_time': round(travel_start_time + best_t_travel, 2), 'finish_time': round(best_finish, 2), 'processing_duration': round(best_t_proc, 2), 'travel_duration': round(best_t_travel, 2), 'successor': None}
+                        if route:
+                            route[-1]['successor'] = all_mission_ids[order_id]
+                        route.append(step)
+                        final_op_routes[best_op] = route
+                        assigned_this_iter.add(order_id)
+                        print(f'Repredicted-tail-inserted order {order_id} to Op {best_op}')
+                        logging.info(f'Repredicted-tail-inserted order {order_id} to Op {best_op}')
+                if not assigned_this_iter:
+                    print('No progress in this reprediction iteration; breaking.')
+                    logging.info('No progress in this reprediction iteration; breaking.')
+                    break
+                rejected_orders -= assigned_this_iter
+                
+        for op, route in final_op_routes.items():
+            if len(route) <= 2:
+                continue
+            cluster_nodes = [s['_internal'] for s in route]
+            current_best_makespan = route[-1]['finish_time']
+
+            def get_travel(u, v):
+                if u == -1:
+                    return base_travel_map.get((op, v), avg_travel_time)
+                t = travel_time_map.get((u, v), avg_travel_time)
+                if t == 0.0:
+                    t = avg_travel_time
+                return t
+
+            def evaluate_makespan(rt_nodes):
+                current_time = 0.0
+                for i, cand in enumerate(rt_nodes):
+                    prev = rt_nodes[i - 1] if i > 0 else -1
+                    t_travel = get_travel(prev, cand)
+                    t_proc = proc_time_map.get((op, cand), 0.0)
+                    finish = current_time + t_travel + t_proc
+                    if finish > h_fixed_mins:
+                        return (False, float('inf'))
+                    current_time = finish
+                return (True, current_time)
+
+            def build_steps_for_nodes(rt_nodes):
+                current_time = 0.0
+                steps = []
+                for i, cand in enumerate(rt_nodes):
+                    prev = rt_nodes[i - 1] if i > 0 else -1
+                    t_travel = get_travel(prev, cand)
+                    t_proc = proc_time_map.get((op, cand), 0.0)
+                    finish = current_time + t_travel + t_proc
+                    steps.append({'mission_id': all_mission_ids[cand], '_internal': cand, 'start_time': round(current_time + t_travel, 2), 'finish_time': round(finish, 2), 'processing_duration': round(t_proc, 2), 'travel_duration': round(t_travel, 2), 'successor': None})
+                    current_time = finish
+                for i in range(len(steps) - 1):
+                    steps[i]['successor'] = steps[i + 1]['mission_id']
+                return steps
+                
+            best_route_steps = list(route)
+            improved = True
+            while improved:
+                improved = False
+                for i in range(len(cluster_nodes)):
+                    for j in range(i + 1, len(cluster_nodes)):
+                        new_nodes_swap = cluster_nodes[:]
+                        new_nodes_swap[i], new_nodes_swap[j] = (new_nodes_swap[j], new_nodes_swap[i])
+                        is_feas_swap, new_makespan_swap = evaluate_makespan(new_nodes_swap)
+                        if is_feas_swap and new_makespan_swap < current_best_makespan - 0.001:
+                            current_best_makespan = new_makespan_swap
+                            cluster_nodes = new_nodes_swap
+                            best_route_steps = build_steps_for_nodes(cluster_nodes)
+                            improved = True
+                            continue
+                        new_nodes_rev = cluster_nodes[:i] + cluster_nodes[i:j + 1][::-1] + cluster_nodes[j + 1:]
+                        is_feas_rev, new_makespan_rev = evaluate_makespan(new_nodes_rev)
+                        if is_feas_rev and new_makespan_rev < current_best_makespan - 0.001:
+                            current_best_makespan = new_makespan_rev
+                            cluster_nodes = new_nodes_rev
+                            best_route_steps = build_steps_for_nodes(cluster_nodes)
+                            improved = True
+                            continue
+            final_op_routes[op] = best_route_steps
+            
+        schedule_data = {'metadata': {'num_orders': int(num_orders), 'num_operators': int(num_ops), 'valid': True, 'schedule_id': getattr(batch, 'schedule_id', ['unknown'])[0] if hasattr(batch, 'schedule_id') else 'unknown'}, 'operators': []}
+        assigned_count = 0
+        for op_idx, route in final_op_routes.items():
+            if route:
+                clean_route = [{k: v for k, v in s.items() if k != '_internal'} for s in route]
+                schedule_data['operators'].append({'operator_id': all_operator_ids[op_idx], 'assigned_orders_count': len(clean_route), 'routes': [clean_route]})
+                assigned_count += len(clean_route)
+        activate_extra_op = False
+        if assigned_count < num_orders and len(active_ops) < num_ops:
+            print(f'Warning: {num_orders - assigned_count} orders unassigned.')
+            logging.critical(f'Warning: {num_orders - assigned_count} orders unassigned.')
+            activate_extra_op = True
+            predicted_schedule_name = filename.replace('.json', '')
+            if not predicted_schedule_name in self.batch_tail_insertions_with_new_activations.keys():
+                self.batch_tail_insertions_with_new_activations[predicted_schedule_name] = num_orders - assigned_count
+            if activate_extra_op and len(active_ops) + n_extra_ops_to_use < np.size(p_act):
+                n_extra_ops_to_use = n_extra_ops_to_use + 1
+                print(f'Trying to resolve by activating extra {n_extra_ops_to_use} operators.')
+                logging.info(f'Trying to resolve by activating extra {n_extra_ops_to_use} operators.')
+                self.export_schedule_with_timings_v3_refined(model=model, batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
+        else:
+            unassigned_orders = num_orders - assigned_count
+            schedule_data['metadata']['unassigned_orders'] = unassigned_orders
+            if unassigned_orders > 0:
+                print(colored_background_str(r=255, g=0, b=5, text=f'Warning: {unassigned_orders} orders remain unassigned.'))
+                logging.critical(f'Warning: {unassigned_orders} orders remain unassigned.')
+            h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
+            schedule_data['metadata']['horizon_valid'] = h_valid
+            schedule_data['metadata']['horizon_violations'] = h_violations
+            os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
+            with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
+                json.dump(schedule_data, f, indent=4)
+            print(f'Schedule exported with name: {filename}')
+            logging.info(f'Schedule exported with name: {filename}')
+
+    @torch.no_grad()
     def export_schedule_with_timings_v3_hungarian_tail_repredicted(self, model, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
         """
         Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
@@ -2318,7 +2735,8 @@ class ScheduleDecoder:
         Includes an iterative dynamic reprediction strategy for tail-insertions.
         Includes a completely non-destructive Makespan Minimization Refinement pass.
         """
-        import copy
+        if '_800' in batch.schedule_id:
+            print()
 
         global_time_scale = 1.0
         if hasattr(batch, 'global_scale_factor'):
@@ -2549,8 +2967,6 @@ class ScheduleDecoder:
             if predicted_schedule_name not in self.batch_tail_insertions.keys():
                 self.batch_tail_insertions[predicted_schedule_name] = len(rejected_orders)
 
-            device = batch.edge_index_dict[('operator', 'assign', 'order')].device
-            
             tail_iter = 0
             while rejected_orders:
                 tail_iter += 1
@@ -2662,19 +3078,19 @@ class ScheduleDecoder:
                 tail_to_idx = {tail_orders[i]: i for i in range(num_tails)}
                 slot_to_op = {i: viable_ops_flat[i] for i in range(num_slots)}
                 
-                filtered_assign_src = new_edge_index_dict[('operator', 'assign', 'order')][0].cpu().numpy()
-                filtered_assign_dst = new_edge_index_dict[('operator', 'assign', 'order')][1].cpu().numpy()
-                
-                for idx in range(len(filtered_assign_src)):
-                    op_id = int(filtered_assign_src[idx])
-                    order_id = int(filtered_assign_dst[idx])
-                    prob = float(new_p_assign[idx])
+                #use original p_assign (no GNN structural destruction)
+                for idx in range(assign_idx.shape[1]):
+                    op_id = int(assign_idx[0, idx])
+                    order_id = int(assign_idx[1, idx])
+                    prob = float(p_assign[idx]) #use original, properly temperature-scaled prob
                     
                     if order_id in tail_to_idx and prob > 0.0:
                         t_idx = tail_to_idx[order_id]
-                        for s_idx in range(num_slots):
-                            if slot_to_op[s_idx] == op_id:
-                                cost_matrix_tail[t_idx, s_idx] = -prob
+                        #only allow if the pair is viable (fits within H_fixed)
+                        if op_id in viable_assign_matrix and order_id in viable_assign_matrix[op_id]:
+                            for s_idx in range(num_slots):
+                                if slot_to_op[s_idx] == op_id:
+                                    cost_matrix_tail[t_idx, s_idx] = -prob
                                 
                 row_ind_tail, col_ind_tail = linear_sum_assignment(cost_matrix_tail)
                 
@@ -2758,6 +3174,7 @@ class ScheduleDecoder:
                     current_time = finish
                 return True, current_time
 
+            best_route_steps = list(route)
             def build_steps_for_nodes(rt_nodes):
                 current_time = 0.0
                 steps = []
@@ -2873,6 +3290,736 @@ class ScheduleDecoder:
 
             print(f"Schedule exported with name: {filename}")
             logging.info(f"Schedule exported with name: {filename}")
+    
+    @torch.no_grad()
+    def export_schedule_with_timings_recurrent(self, model, batch, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
+        """
+        Exports a schedule aiming for Activation First, then Makespan.
+        Features:
+        1. ACTIVATION FIRST: Locks the allowed pool of operators to the absolute physical minimum (K).
+        2. GNN RANKING: Uses the GNN Activation Head strictly to pick the best K operators.
+        3. MAKESPAN SECOND: Load balances perfectly among the strictly bounded K operators.
+        4. RECURSION: Increments K by 1 only if the current pool mathematically fails to fit the orders.
+        """
+        global_time_scale = 1.0
+        if hasattr(batch, 'global_scale_factor'):
+            global_time_scale = batch.global_scale_factor.mean().item()
+            
+        if not hasattr(batch, 'u') or batch.u is None:
+            return True, []
+            
+        h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
+        
+        num_orders = batch['order'].num_nodes
+        num_ops = batch['operator'].num_nodes
+        all_mission_ids = batch['order'].global_id.cpu().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().tolist()
+        device = batch['order'].x.device
+        
+        # Build processing and travel maps for accurate timing calculation
+        assign_idx = batch['operator', 'assign', 'order'].edge_index.cpu().numpy()
+        assign_attr = batch['operator', 'assign', 'order'].edge_attr.cpu().numpy()
+        
+        proc_time_map = {}
+        base_travel_map = {}
+        for i in range(assign_idx.shape[1]):
+            val_proc = float(assign_attr[i, 0]) if assign_attr.ndim > 1 else float(assign_attr[i])
+            val_travel = float(assign_attr[i, 1]) if (assign_attr.ndim > 1 and assign_attr.shape[1] > 1) else 0.0
+            
+            op = int(assign_idx[0, i])
+            order = int(assign_idx[1, i])
+            proc_time_map[(op, order)] = val_proc * global_time_scale
+            base_travel_map[(op, order)] = val_travel * global_time_scale
+
+        seq_idx = batch['order', 'to', 'order'].edge_index.cpu().numpy()
+        seq_attr = batch['order', 'to', 'order'].edge_attr.cpu().numpy()
+        travel_time_map = {}
+        for i in range(seq_idx.shape[1]):
+            val = float(seq_attr[i, 0]) if seq_attr.ndim > 1 else float(seq_attr[i])
+            travel_time_map[(int(seq_idx[0, i]), int(seq_idx[1, i]))] = val * global_time_scale
+
+        valid_travel_times = [v for v in travel_time_map.values() if not math.isnan(v)]
+        if not valid_travel_times:
+            avg_travel_time = 1.0
+        else:
+            avg_travel_time = sum(valid_travel_times) / len(valid_travel_times)
+            if avg_travel_time <= 0:
+                avg_travel_time = 1.0
+            
+        # 1. Initialize State Variables & Dynamic Features
+        batch_dict_arg = {
+            'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch') else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=device),
+            'order': batch['order'].batch if hasattr(batch['order'], 'batch') else torch.zeros(batch['order'].x.size(0), dtype=torch.long, device=device)
+        }
+
+        # Initialize Order Dynamic Features: [is_assigned] (Becomes Index 10)
+        order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=device)
+        new_order_x = torch.cat([batch['order'].x, order_dynamic], dim=1)
+
+        # Initialize Operator Dynamic Features: [remaining_h_fixed, current_X, current_Y] (Becomes Indices 15,16,17)
+        op_batch = batch_dict_arg['operator']
+        h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1) 
+        op_xy_initial = torch.zeros((num_ops, 2), dtype=torch.float, device=device)
+        
+        op_dynamic = torch.cat([h_fixed_initial, op_xy_initial], dim=1)
+        new_op_x = torch.cat([batch['operator'].x, op_dynamic], dim=1)
+
+        x_dict_raw = {
+            'order': new_order_x.clone(),
+            'operator': new_op_x.clone()
+        }
+
+        # Initialize recurrent states
+        static_embs = None
+        op_hidden = None
+        last_order_emb = None
+        
+        # Route tracking
+        final_op_routes = {op: [] for op in range(num_ops)}
+        current_times = {op: 0.0 for op in range(num_ops)}
+        unassigned_orders = set(range(num_orders))
+        
+        iteration = 0
+        max_iterations = num_orders + 100
+        
+        model.eval()
+        
+        # --- ACTIVATION FIRST: Determine strict minimum pool size ---
+        # Calculate theoretical minimum ops needed based on average processing and travel times
+        total_proc_time = 0.0
+        for o in range(num_orders):
+            total_proc_time += np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
+        total_travel_time = num_orders * avg_travel_time
+        theoretical_min_ops = math.ceil((total_proc_time + total_travel_time) / h_fixed_mins)
+        
+        with torch.no_grad():
+            _, initial_preds, _ = model(x_dict_raw, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict_arg)
+            act_probs = initial_preds['activation'].view(-1)
+            
+        # By setting the target pool size to the physical minimum, we FORCE the model 
+        # to optimize activation first. It literally cannot use more operators than k_target.
+        k_target = max(1, theoretical_min_ops) + n_extra_ops_to_use
+        k_target = min(num_ops, k_target)
+        
+        # We use the GNN's activation head strictly to rank WHICH operators to use.
+        active_ops_list = np.argsort(act_probs.cpu().numpy())[-k_target:].tolist()
+        active_ops = set(active_ops_list)
+        active_op_tensor = torch.tensor(list(active_ops), device=device)
+        k_current = len(active_ops)
+
+        # 2. Sequential Decoding Loop
+        while unassigned_orders and iteration < max_iterations:
+            print(f"Iteration: {iteration} - Unassigned Orders: {len(unassigned_orders)}, Active Ops: {k_current}")
+            logging.info(f"Iteration: {iteration} - Unassigned Orders: {len(unassigned_orders)}, Active Ops: {k_current}")
+            iteration += 1
+            
+            # Forward Pass (ONE Step)
+            new_op_hidden, preds, static_embs = model(
+                x_dict_raw=x_dict_raw,
+                edge_index_dict=batch.edge_index_dict,
+                edge_attr_dict=batch.edge_attr_dict,
+                u=batch.u,
+                batch_dict=batch_dict_arg,
+                static_embs=static_embs,
+                op_hidden=op_hidden,
+                last_order_emb=last_order_emb
+            )
+
+            if last_order_emb is None:
+                last_order_emb = torch.zeros_like(static_embs['operator'])
+            if op_hidden is None:
+                op_hidden = static_embs['operator']
+                
+            assign_probs = preds['assignment'].view(-1) 
+            assign_edge_index = batch['operator', 'assign', 'order'].edge_index
+            
+            is_assigned_flag = x_dict_raw['order'][:, 10].view(-1)
+            remaining_h = x_dict_raw['operator'][:, 15].view(-1)
+            
+            src_idx = assign_edge_index[0]
+            dst_idx = assign_edge_index[1]
+            
+            # Hard constraints (Mask invalid edges)
+            valid_order_mask = (is_assigned_flag[dst_idx] < 0.5)
+            valid_op_mask = (remaining_h[src_idx] > 0.0)
+            valid_time_mask = torch.zeros_like(valid_order_mask)
+            
+            for e_idx in range(assign_edge_index.shape[1]):
+                if not valid_order_mask[e_idx] or not valid_op_mask[e_idx]:
+                    continue
+                op = int(src_idx[e_idx])
+                order = int(dst_idx[e_idx])
+                
+                route = final_op_routes[op]
+                last_node = route[-1]['internal'] if route else None
+                
+                if last_node is not None:
+                    t_travel = travel_time_map.get((last_node, order), avg_travel_time)
+                else:
+                    t_travel = base_travel_map.get((op, order), avg_travel_time)
+                    
+                t_proc = proc_time_map.get((op, order), 0.0)
+                
+                if current_times[op] + t_travel + t_proc <= h_fixed_mins:
+                    valid_time_mask[e_idx] = True
+            
+            combined_mask = valid_order_mask & valid_op_mask & valid_time_mask
+            
+            if not combined_mask.any():
+                print(f"Capacity globally exhausted for all operators. Stopping at iteration {iteration}")
+                logging.info(f"Capacity globally exhausted for all operators. Stopping at iteration {iteration}")
+                break
+                
+            masked_probs = assign_probs.clone()
+            masked_probs[~combined_mask] = -10000.0 
+            
+            # --- STRICT POOL MASKING WITH LOAD BALANCING (MAKESPAN SECOND) ---
+            is_allowed_active = torch.isin(src_idx, active_op_tensor)
+            
+            # Because the pool size is already completely locked to k_current (Activation First),
+            # we can safely distribute the load evenly among them without inflating activation!
+            current_load = h_fixed_mins - remaining_h[src_idx]
+            load_ratio = current_load / (h_fixed_mins + 1e-6)  
+            
+            if n_extra_ops_to_use < 2:
+                # Primary Strategy: Perfect Load Balancing for optimal Makespan
+                balanced_probs = masked_probs - (load_ratio * 1.5)
+            else:
+                # Fallback Strategy: If perfect balancing causes fragmentation that 
+                # exhausts capacity multiple times, we shift to Bin-Packing to force a fit.
+                balanced_probs = masked_probs + (load_ratio * (0.5 * n_extra_ops_to_use))
+
+            tier_1_mask = combined_mask & is_allowed_active
+            
+            if tier_1_mask.any():
+                # We force the assignment to happen ONLY within the predicted allowed operators
+                tier_1_probs = balanced_probs.clone()
+                tier_1_probs[~tier_1_mask] = -20000.0
+                best_edge_idx = torch.argmax(tier_1_probs).item()
+            else:
+                # The strictly bounded operators CANNOT fit the remaining orders physically.
+                # We immediately break to trigger the recursive retry with K+1.
+                print(f"Strict allowed set of {k_current} predicted operators exhausted. Breaking to trigger retry.")
+                logging.info(f"Strict allowed set of {k_current} predicted operators exhausted. Breaking to trigger retry.")
+                break
+            
+            best_op = int(src_idx[best_edge_idx])
+            best_order = int(dst_idx[best_edge_idx])
+            
+            # Add to schedule
+            route = final_op_routes[best_op]
+            last_node = route[-1]['internal'] if route else None
+            
+            if last_node is not None:
+                t_travel = travel_time_map.get((last_node, best_order), avg_travel_time)
+            else:
+                t_travel = base_travel_map.get((best_op, best_order), avg_travel_time)
+                
+            t_proc = proc_time_map.get((best_op, best_order), 0.0)
+            
+            travel_start = current_times[best_op]
+            finish_time = travel_start + t_travel + t_proc
+            
+            step = {
+                "mission_id": all_mission_ids[best_order],
+                "internal": best_order,
+                "start_time": round(travel_start + t_travel, 2),
+                "finish_time": round(finish_time, 2),
+                "processing_duration": round(t_proc, 2),
+                "travel_duration": round(t_travel, 2),
+                "successor": None
+            }
+            
+            if route:
+                route[-1]['successor'] = all_mission_ids[best_order]
+                
+            route.append(step)
+            current_times[best_op] = finish_time
+            unassigned_orders.remove(best_order)
+            
+            # 3. Dynamic State Update for Next Step
+            next_order_x = x_dict_raw['order'].clone()
+            next_op_x = x_dict_raw['operator'].clone()
+            next_order_x[best_order, 10] = 1.0 
+            
+            time_taken = batch['operator', 'assign', 'order'].edge_attr[best_edge_idx, 0]
+            if batch['operator', 'assign', 'order'].edge_attr.shape[1] > 1:
+                time_taken += batch['operator', 'assign', 'order'].edge_attr[best_edge_idx, 1]
+            
+            next_op_x[best_op, 15] -= time_taken.squeeze()
+            next_op_x[best_op, 16] = next_order_x[best_order, 4]
+            next_op_x[best_op, 17] = next_order_x[best_order, 5]
+            
+            x_dict_raw = {'order': next_order_x, 'operator': next_op_x}
+
+            next_last_order_emb = last_order_emb.clone()
+            next_last_order_emb[best_op] = static_embs['order'][best_order]
+            last_order_emb = next_last_order_emb
+            
+            next_op_hidden = op_hidden.clone()
+            next_op_hidden[best_op] = new_op_hidden[best_op]
+            op_hidden = next_op_hidden
+
+        # 4. Reconstruct Output Schedule & Handle Recursion
+        assigned_count = sum(len(route) for route in final_op_routes.values())
+        
+        schedule_data = {
+            "metadata": {
+                "num_orders": int(num_orders),
+                "num_operators": int(num_ops),
+                "valid": assigned_count == num_orders,
+                "schedule_id": getattr(batch, 'schedule_id', ['unknown'])[0] if hasattr(batch, 'schedule_id') else "unknown"
+            },
+            "operators": []
+        }
+
+        for op_idx, route in final_op_routes.items():
+            if route:
+                clean_route = [{k:v for k,v in s.items() if k != 'internal'} for s in route]
+                schedule_data["operators"].append({
+                    "operator_id": all_operator_ids[op_idx],
+                    "assigned_orders_count": len(clean_route),
+                    "routes": [clean_route]
+                })
+
+        # --- RECURSIVE RETRY LOGIC ---
+        if assigned_count < num_orders and k_current < num_ops:
+            n_extra_ops_to_use += 1
+            print(f"Warning: Orders unassigned with {k_current} predicted ops. Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
+            logging.info(f"Warning: Orders unassigned with {k_current} predicted ops. Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
+
+            # Discard this attempt and retry completely from Step 0 with K+1 operators allowed
+            return self.export_schedule_with_timings_recurrent(
+                model=model,
+                batch=batch,
+                filename=filename,
+                use_extra_ops=True,
+                n_extra_ops_to_use=n_extra_ops_to_use
+            )
+            
+        elif assigned_count < num_orders:
+            # We used ALL available operators and still failed (mathematically impossible instance)
+            schedule_data['metadata']['unassigned_orders'] = num_orders - assigned_count
+            print(colored_background_str(r=255, g=0, b=5, text=f"Warning: {unassigned_orders} orders remain definitely unassigned."))
+            
+        h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
+        schedule_data['metadata']['horizon_valid'] = h_valid
+        schedule_data['metadata']['horizon_violations'] = h_violations
+
+        os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
+
+        with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
+            json.dump(schedule_data, f, indent=4)
+            
+        print(f"Schedule exported with name: {filename} (Using {k_current} operators)")
+
+    @torch.no_grad()
+    def export_schedule_with_timings_recurrent_v2(self, model, batch, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
+        """
+        Exports a schedule aiming for Activation First, then Makespan.
+        Features:
+        1. ACTIVATION FIRST: Locks the allowed pool of operators to the absolute physical minimum (K).
+        2. GNN RANKING: Uses the GNN Activation Head strictly to pick the best K operators.
+        3. MAKESPAN SECOND: Load balances perfectly among the strictly bounded K operators.
+        4. CHUNKED DECODING: Assigns multiple confident orders per iteration using temperature 
+           scaling and thresholding to vastly accelerate processing time. 
+           It builds a NON-OVERLAPPED chunk within one iteration, at most one new order per operator and
+           each order appears at most once.
+        Non-overlapped chunk build:
+        1. prefer edges above threshold.
+        2. Sort by score descending.
+        3. Greedily keep only edges with unique operator and unique order.
+        """
+        global_time_scale = 1.0
+        if hasattr(batch, 'global_scale_factor'):
+            global_time_scale = batch.global_scale_factor.mean().item()
+
+        if not hasattr(batch, 'u') or batch.u is None:
+            return True, []
+
+        h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
+
+        num_orders = batch['order'].num_nodes
+        num_ops = batch['operator'].num_nodes
+        all_mission_ids = batch['order'].global_id.cpu().tolist()
+        all_operator_ids = batch['operator'].global_id.cpu().tolist()
+        device = batch['order'].x.device
+
+        #build processing / travel maps for real timing checks
+        assign_edge_index_cpu = batch['operator', 'assign', 'order'].edge_index.cpu().numpy()
+        assign_attr_cpu = batch['operator', 'assign', 'order'].edge_attr.cpu().numpy()
+
+        proc_time_map = {}
+        base_travel_map = {}
+        for i in range(assign_edge_index_cpu.shape[1]):
+            op = int(assign_edge_index_cpu[0, i])
+            order = int(assign_edge_index_cpu[1, i])
+
+            val_proc = float(assign_attr_cpu[i, 0]) if assign_attr_cpu.ndim > 1 else float(assign_attr_cpu[i])
+            val_travel = float(assign_attr_cpu[i, 1]) if (assign_attr_cpu.ndim > 1 and assign_attr_cpu.shape[1] > 1) else 0.0
+
+            proc_time_map[(op, order)] = val_proc * global_time_scale
+            base_travel_map[(op, order)] = val_travel * global_time_scale
+
+        seq_edge_index_cpu = batch['order', 'to', 'order'].edge_index.cpu().numpy()
+        seq_attr_cpu = batch['order', 'to', 'order'].edge_attr.cpu().numpy()
+
+        travel_time_map = {}
+        for i in range(seq_edge_index_cpu.shape[1]):
+            u = int(seq_edge_index_cpu[0, i])
+            v = int(seq_edge_index_cpu[1, i])
+            val = float(seq_attr_cpu[i, 0]) if seq_attr_cpu.ndim > 1 else float(seq_attr_cpu[i])
+            travel_time_map[(u, v)] = val * global_time_scale
+
+        valid_travel_times = [v for v in travel_time_map.values() if not math.isnan(v)]
+        if not valid_travel_times:
+            avg_travel_time = 1.0
+        else:
+            avg_travel_time = sum(valid_travel_times) / len(valid_travel_times)
+        if avg_travel_time <= 0:
+            avg_travel_time = 1.0
+
+        #initialize dynamic features
+        #order dynamic: [is_assigned] -> appended index 10
+        #operator dynamic: [remaining_h_fixed, current_x, current_y] -> 15,16,17
+        batch_dict_arg = {
+            'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch')
+                        else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=device),
+            'order': batch['order'].batch if hasattr(batch['order'], 'batch')
+                    else torch.zeros(batch['order'].x.size(0), dtype=torch.long, device=device)
+        }
+
+        order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=device)
+        new_order_x = torch.cat([batch['order'].x, order_dynamic], dim=1)
+
+        op_batch = batch_dict_arg['operator']
+        h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1)
+        op_xy_initial = torch.zeros((num_ops, 2), dtype=torch.float, device=device)
+        op_dynamic = torch.cat([h_fixed_initial, op_xy_initial], dim=1)
+        new_op_x = torch.cat([batch['operator'].x, op_dynamic], dim=1)
+
+        x_dict_raw = {
+            'order': new_order_x.clone(),
+            'operator': new_op_x.clone()
+        }
+
+        static_embs = None
+        op_hidden = None
+        last_order_emb = None
+
+        final_op_routes = {op: [] for op in range(num_ops)}
+        current_times = {op: 0.0 for op in range(num_ops)}
+        unassigned_orders = set(range(num_orders))
+
+        iteration = 0
+        max_iterations = num_orders + 100
+        last_chunk_assigned = 0
+        model.eval()
+
+        #activation-first: choose the smallest operator pool K, then rank by act head.
+        #to reduce the number of possibile additional recursions, we might choose all ops with p_act > act_threshold instead of a fixed K, but we have to be careful to not inflate K too much and break the activation-first principle.
+        total_proc_time = 0.0
+        for o in range(num_orders):
+            total_proc_time += np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
+
+        total_travel_time = num_orders * avg_travel_time
+        theoretical_min_ops = math.ceil((total_proc_time + total_travel_time) / max(h_fixed_mins, 1e-6))
+
+        with torch.no_grad():
+            _, initial_preds, _ = model(
+                x_dict_raw,
+                batch.edge_index_dict,
+                batch.edge_attr_dict,
+                batch.u,
+                batch_dict_arg
+            )
+            act_probs = initial_preds['activation'].view(-1)
+
+        k_target = max(1, theoretical_min_ops) + n_extra_ops_to_use
+        k_target = min(num_ops, k_target)
+
+        active_ops_list = np.argsort(act_probs.detach().cpu().numpy())[-k_target:].tolist()
+        active_ops = set(active_ops_list)
+        k_current = len(active_ops)
+
+        assign_threshold = getattr(self, 'assign_threshold', 0.05)
+
+        #sequential recurrent chunked decoding
+        while unassigned_orders and iteration < max_iterations:
+            print(f"Iteration: {iteration} - Unassigned Orders: {len(unassigned_orders)}, Active Ops: {k_current}")
+            logging.info(f"Iteration: {iteration} - Unassigned Orders: {len(unassigned_orders)}, Active Ops: {k_current}")
+            iteration += 1
+
+            new_op_hidden, preds, static_embs = model(
+                x_dict_raw,
+                batch.edge_index_dict,
+                batch.edge_attr_dict,
+                batch.u,
+                batch_dict_arg,
+                static_embs=static_embs,
+                op_hidden=op_hidden,
+                last_order_emb=last_order_emb
+            )
+
+            if last_order_emb is None:
+                last_order_emb = torch.zeros_like(static_embs['operator'])
+            if op_hidden is None:
+                op_hidden = static_embs['operator']
+
+            assign_probs_raw = preds['assignment'].view(-1)
+            assign_edge_index = batch['operator', 'assign', 'order'].edge_index
+            assign_edge_attr = batch['operator', 'assign', 'order'].edge_attr
+
+            # Temperature scaling
+            temperature = 1.0 + (TEMPERATURE_SCALING_FACTOR * num_orders)
+            assign_probs_clipped = torch.clamp(assign_probs_raw, min=1e-8, max=1.0 - 1e-8)
+            raw_logits = torch.log(assign_probs_clipped / (1.0 - assign_probs_clipped))
+            scaled_assign_probs = torch.sigmoid(raw_logits / temperature)
+
+            is_assigned_flag = x_dict_raw['order'][:, 10].view(-1)
+            remaining_h = x_dict_raw['operator'][:, 15].view(-1)
+
+            src_idx = assign_edge_index[0]
+            dst_idx = assign_edge_index[1]
+
+            active_mask = torch.zeros(num_ops, dtype=torch.bool, device=device)
+            if len(active_ops) > 0:
+                active_mask[list(active_ops)] = True
+
+            valid_order_mask = is_assigned_flag[dst_idx] < 0.5
+            valid_op_mask = active_mask[src_idx] & (remaining_h[src_idx] > 0.0)
+
+            valid_time_mask = torch.zeros_like(valid_order_mask)
+            for edge_idx in range(assign_edge_index.shape[1]):
+                if not valid_order_mask[edge_idx] or not valid_op_mask[edge_idx]:
+                    continue
+
+                op = int(src_idx[edge_idx].item())
+                order = int(dst_idx[edge_idx].item())
+
+                route = final_op_routes[op]
+                last_node = route[-1]['_internal'] if route else None
+
+                if last_node is not None:
+                    t_travel = travel_time_map.get((last_node, order), avg_travel_time)
+                else:
+                    t_travel = base_travel_map.get((op, order), avg_travel_time)
+
+                t_proc = proc_time_map.get((op, order), 0.0)
+
+                if current_times[op] + t_travel + t_proc <= h_fixed_mins:
+                    valid_time_mask[edge_idx] = True
+
+            combined_mask = valid_order_mask & valid_op_mask & valid_time_mask
+
+            if not combined_mask.any():
+                print(f"Capacity globally exhausted for all active operators. Stopping at iteration {iteration}.")
+                logging.info(f"Capacity globally exhausted for all active operators. Stopping at iteration {iteration}.")
+                break
+
+            masked_probs = scaled_assign_probs.clone()
+            masked_probs[~combined_mask] = -10000.0
+
+            #STR- non-overlapped chunk build
+            edges_above_threshold = torch.nonzero(
+                (masked_probs >= assign_threshold) & combined_mask
+            ).view(-1)
+
+            if edges_above_threshold.numel() > 0:
+                sorted_local = torch.argsort(masked_probs[edges_above_threshold], descending=True)
+                candidate_edges = edges_above_threshold[sorted_local].detach().cpu().tolist()
+            else:
+                fallback_valid_edges = torch.nonzero(combined_mask).view(-1)
+                sorted_local = torch.argsort(masked_probs[fallback_valid_edges], descending=True)
+                candidate_edges = fallback_valid_edges[sorted_local].detach().cpu().tolist()
+
+            used_ops_in_chunk = set()
+            used_orders_in_chunk = set()
+            non_overlapped_edges = []
+
+            for edge_idx in candidate_edges:
+                op = int(src_idx[edge_idx].item())
+                order = int(dst_idx[edge_idx].item())
+
+                if op in used_ops_in_chunk:
+                    continue
+                if order in used_orders_in_chunk:
+                    continue
+
+                non_overlapped_edges.append(edge_idx)
+                used_ops_in_chunk.add(op)
+                used_orders_in_chunk.add(order)
+
+            if len(non_overlapped_edges) == 0:
+                print("Warning: Chunk processing found no non-overlapped feasible assignments. Breaking.")
+                logging.warning("Warning: Chunk processing found no non-overlapped feasible assignments. Breaking.")
+                break
+
+            next_order_x = x_dict_raw['order'].clone()
+            next_op_x = x_dict_raw['operator'].clone()
+            next_last_order_emb = last_order_emb.clone()
+            next_op_hidden = new_op_hidden.clone() if torch.is_tensor(new_op_hidden) else op_hidden.clone()
+
+            assigned_in_chunk = set()
+            chunk_assigned = 0
+
+            for edge_idx in non_overlapped_edges:
+                best_op = int(src_idx[edge_idx].item())
+                best_order = int(dst_idx[edge_idx].item())
+
+                if best_order in assigned_in_chunk:
+                    continue
+                if best_order not in unassigned_orders:
+                    continue
+
+                route = final_op_routes[best_op]
+                last_node = route[-1]['_internal'] if route else None
+
+                if last_node is not None:
+                    t_travel = travel_time_map.get((last_node, best_order), avg_travel_time)
+                else:
+                    t_travel = base_travel_map.get((best_op, best_order), avg_travel_time)
+
+                t_proc = proc_time_map.get((best_op, best_order), 0.0)
+                travel_start = current_times[best_op]
+                finish_time = travel_start + t_travel + t_proc
+
+                #re-verify capacity locally after earlier chunk assignments
+                if finish_time > h_fixed_mins:
+                    continue
+
+                step = {
+                    "mission_id": all_mission_ids[best_order],
+                    "_internal": best_order,
+                    "start_time": round(travel_start + t_travel, 2),
+                    "finish_time": round(finish_time, 2),
+                    "processing_duration": round(t_proc, 2),
+                    "travel_duration": round(t_travel, 2),
+                    "successor": None
+                }
+
+                if route:
+                    route[-1]["successor"] = all_mission_ids[best_order]
+
+                route.append(step)
+                current_times[best_op] = finish_time
+                unassigned_orders.remove(best_order)
+                assigned_in_chunk.add(best_order)
+                chunk_assigned += 1
+
+                #local dynamic-state update
+                next_order_x[best_order, 10] = 1.0
+
+                time_taken = assign_edge_attr[edge_idx, 0]
+                if assign_edge_attr.shape[1] > 1:
+                    time_taken = time_taken + assign_edge_attr[edge_idx, 1]
+
+                next_op_x[best_op, 15] = torch.clamp(next_op_x[best_op, 15] - time_taken.squeeze(), min=0.0)
+                next_op_x[best_op, 16] = next_order_x[best_order, 4]
+                next_op_x[best_op, 17] = next_order_x[best_order, 5]
+
+                if static_embs is not None and 'order' in static_embs:
+                    next_last_order_emb[best_op] = static_embs['order'][best_order]
+
+                if torch.is_tensor(new_op_hidden):
+                    next_op_hidden[best_op] = new_op_hidden[best_op]
+
+            last_chunk_assigned = chunk_assigned
+
+            if chunk_assigned == 0:
+                print("Warning: Chunk processing failed to assign any orders. Breaking to avoid infinite loop.")
+                logging.warning("Warning: Chunk processing failed to assign any orders. Breaking to avoid infinite loop.")
+                break
+
+            x_dict_raw = {
+                'order': next_order_x,
+                'operator': next_op_x
+            }
+            last_order_emb = next_last_order_emb
+            op_hidden = next_op_hidden
+
+        #build exported schedule
+        assigned_count = sum(len(route) for route in final_op_routes.values())
+
+        schedule_id = 'unknown'
+        if hasattr(batch, 'scheduleid'):
+            sid = getattr(batch, 'scheduleid')
+            if torch.is_tensor(sid):
+                schedule_id = sid[0].item() if sid.numel() > 0 else 'unknown'
+            elif isinstance(sid, (list, tuple)):
+                schedule_id = sid[0] if len(sid) > 0 else 'unknown'
+            else:
+                schedule_id = sid
+        elif hasattr(batch, 'schedule_id'):
+            sid = getattr(batch, 'schedule_id')
+            if torch.is_tensor(sid):
+                schedule_id = sid[0].item() if sid.numel() > 0 else 'unknown'
+            elif isinstance(sid, (list, tuple)):
+                schedule_id = sid[0] if len(sid) > 0 else 'unknown'
+            else:
+                schedule_id = sid
+
+        schedule_data = {
+            "metadata": {
+                "num_orders": int(num_orders),
+                "num_operators": int(num_ops),
+                "valid": assigned_count == num_orders,
+                "schedule_id": schedule_id,
+            },
+            "operators": []
+        }
+
+        for op_idx, route in final_op_routes.items():
+            if not route:
+                continue
+
+            clean_route = [{k: v for k, v in s.items() if k != "_internal"} for s in route]
+            schedule_data["operators"].append({
+                "operator_id": all_operator_ids[op_idx],
+                "assigned_orders_count": len(clean_route),
+                "routes": [clean_route]
+            })
+
+        #recursive retry with one more active operator
+        if assigned_count < num_orders and k_current < num_ops:
+            n_extra_ops_to_use += 1
+            print(
+                f"Warning: Orders unassigned with {k_current} ops. "
+                f"Assigned chunk={last_chunk_assigned}. Retrying recursively with {k_current + 1} ops."
+            )
+            logging.warning(
+                f"Warning: Orders unassigned with {k_current} ops. "
+                f"Assigned chunk={last_chunk_assigned}. Retrying recursively with {k_current + 1} ops."
+            )
+            return self.export_schedule_with_timings_recurrent_v2(
+                model=model,
+                batch=batch,
+                filename=filename,
+                use_extra_ops=True,
+                n_extra_ops_to_use=n_extra_ops_to_use
+            )
+
+        elif assigned_count < num_orders:
+            schedule_data["metadata"]["unassigned_orders"] = num_orders - assigned_count
+            print(
+                colored_background_str(
+                    r=255,
+                    g=0,
+                    b=5,
+                    text=f"Warning: {num_orders - assigned_count} orders remain definitively unassigned."
+                )
+            )
+            logging.warning(f"Warning: {num_orders - assigned_count} orders remain definitively unassigned.")
+
+        h_valid, h_violations = self.check_horizon_constraint(batch, schedule_data, global_time_scale)
+        schedule_data["metadata"]["horizon_valid"] = h_valid
+        schedule_data["metadata"]["horizon_violations"] = h_violations
+
+        os.makedirs(os.path.dirname(self.predicted_schedule_dir), exist_ok=True)
+        with open(os.path.join(self.predicted_schedule_dir, filename.replace('Batch', 'schedule')), 'w') as f:
+            json.dump(schedule_data, f, indent=4)
+
+        print(f"Schedule exported with name: {filename} (Using {k_current} operators)")
     
     @torch.no_grad()
     def export_autoregressive_schedule(self, model, batch, filename="ar_schedule.json"):
@@ -3092,6 +4239,7 @@ class ScheduleDecoder:
 
 def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
     idx = 0
+    all_executon_times = {}
     for batch in loader:
         batch = batch.to(device)
         batch_dict = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
@@ -3111,12 +4259,15 @@ def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
         is_valid, report = scheduleDecoder.evaluate_full_feasibility(batch, out)
 
         idx = idx + 1
+        start_time = time.perf_counter() #start time
         #scheduleValidator.export_schedule_with_timings_v2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_hungarian(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_hungarian_seq_refined(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         scheduleDecoder.export_schedule_with_timings_v3_hungarian_tail_repredicted(model, batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        #print(report)
+        #scheduleDecoder.export_schedule_with_timings_v3_refined(model, batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+
+        # print(report)
         if is_valid:
             print(f"Schedule [{idx}] is Feasible!")
             logging.info(f"Schedule [{idx}] is Feasible!")
@@ -3124,13 +4275,22 @@ def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
             pass
         else:
             print(colored_background_str(r=255, g=0, b=5, text=f"Schedule [{idx}] is NOT Feasible!"))
-            logging.CRITICAL(f"Schedule [{idx}] is NOT Feasible!")
+            logging.critical(f"Schedule [{idx}] is NOT Feasible!")
             print(f"Activation Feasibility: {report['act_ok']} with stats {report['act_errs']}")
 
             if not report["seq_ok"]:
                 print(f"Sequence Invalid: {report['seq_errs']}")
+        
+        end_time = time.perf_counter() #stop time
+        execution_time = end_time - start_time
 
-def decode_autoregressive(model, loader, scheduleDecoder, device='cuda'):
+        print(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
+        logging.info(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
+        all_executon_times[batch.schedule_id[0]] = execution_time
+
+    logging.info(f"Execution times: {all_executon_times}")
+
+def decode_autoregressive(model, loader, scheduleDecoder, isRecurrent=True, device='cuda'):
     """
     True autoregressive decoding for inference.
     Iteratively runs the GNN, picks the best valid operator-order assignment,
@@ -3139,14 +4299,29 @@ def decode_autoregressive(model, loader, scheduleDecoder, device='cuda'):
     Estimates masks matching the expected format of the downstream export_schedule pipeline.
     """
 
+    all_executon_times = {}
     for batch_idx, batch in enumerate(loader):
         print(f"Evaluating schedule_id: {batch.schedule_id[0]}")
         batch = batch.to(device)
-        scheduleDecoder.export_autoregressive_schedule(model, batch, filename=f"predicted_{batch.schedule_id[0]}.json")
+
+        start_time = time.perf_counter() #start time
+        if isRecurrent:
+             scheduleDecoder.export_schedule_with_timings_recurrent_v2(model, batch, filename=f"predicted_{batch.schedule_id[0]}.json")
+        else:
+            scheduleDecoder.export_autoregressive_schedule(model, batch, filename=f"predicted_{batch.schedule_id[0]}.json")
+        
+        end_time = time.perf_counter() #stop time
+        execution_time = end_time - start_time
+
+        print(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
+        logging.info(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
+        all_executon_times[batch.schedule_id[0]] = execution_time
+
+    logging.info(f"Execution times: {all_executon_times}")
 
 if __name__ == "__main__":
-    use_large_scale = True
-    use_autoregressive_model = False
+    use_large_scale = False
+    use_autoregressive_decoding = True
 
     if use_large_scale:
         #init large-scale dataset
@@ -3175,7 +4350,7 @@ if __name__ == "__main__":
     #tuned hyperparameters 
     best_conf = {
         'batch_size': 32,
-        'hidden_dim': 128,
+        'hidden_dim': 64,
         'heads': 4,
         'dropout': 0.0,
         'lr_trunk': 0.001,
@@ -3322,16 +4497,39 @@ if __name__ == "__main__":
 
     #Augumented data (4 augmentations) - heuristic-boost capacity penalty + no alpha/beta loss + no assignment monotonic id
     #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.4813,
+    #     'assignment': 0.0907,
+    #     'sequence': 0.0858
+    # }
+
+    #Augumented data (4 augmentations) - softplus heuristic-boost capacity penalty + no alpha/beta loss + no assignment monotonic id
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
+    # best_thresholds =  {
+    #     'activation': 0.4048,
+    #     'assignment': 0.0039,
+    #     'sequence': 0.0942
+    # }
+
+    #RecGNN - Augumented data (4 augmentations) - softplus heuristic-boost capacity penalty + no alpha/beta loss + no assignment monotonic id
+    #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
     best_thresholds =  {
-        'activation': 0.4813,
-        'assignment': 0.0907,
-        'sequence': 0.0858
+        'activation': 0.8441,
+        'assignment': 0.1600,
+        'sequence': 0.3155
     }
 
-    if use_autoregressive_model:
-        model = MultiCriteriaGNNModel_AutoRegressive(
+    if use_autoregressive_decoding:
+        # model = MultiCriteriaGNNModel_AutoRegressive(
+        #     hidden_dim=best_conf.get('hidden_dim', 64),
+        #     heads=best_conf.get('heads', 4),
+        # ).to(device)
+        model = MultiCriteriaRecGNNModel(
+            metadata=sample_data.metadata(),
             hidden_dim=best_conf.get('hidden_dim', 64),
+            num_layers=3,
             heads=best_conf.get('heads', 4),
+            dropout=best_conf.get('dropout', 0.2)
         ).to(device)
     else:
         model = MultiCriteriaGNNModel(
@@ -3369,8 +4567,9 @@ if __name__ == "__main__":
     
     print("Starting Schedule Validation - total batches:", len(loader))
 
-    if use_autoregressive_model:
-        decode_autoregressive(model, loader, scheduleDecoder, device)
+    if use_autoregressive_decoding:
+        isRecurrent = isinstance(model, MultiCriteriaRecGNNModel)
+        decode_autoregressive(model, loader, scheduleDecoder, isRecurrent, device)
     else:
         decode_non_autoregressive(model, loader, scheduleDecoder, device)
 
