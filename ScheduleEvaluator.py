@@ -258,7 +258,7 @@ class ScheduleEvaluator:
                       act_loss_weight=1.0,
                       assign_loss_weight=1.0,
                       seq_loss_weight=1.0,
-                      capacity_penalty_weight=1.5,
+                      capacity_penalty_weight=0.01, #1.5
                       heuristic_boost_factor=1.15):
         """
         computes weighted BCE loss for activation, assignment, and sequence heads.
@@ -326,7 +326,7 @@ class ScheduleEvaluator:
         #     capacity_penalty = torch.tensor(0.0, device=pred_assign.device)
 
         #mean over all operators to prevent perverse gradients
-        capacity_penalty = capacity_violations.sum()
+        capacity_penalty = capacity_violations.mean()
         
         #weighted sum
         #Note that alpha/beta need to be scaled down if they are large (e.g. 100) to prevent explosion
@@ -680,17 +680,17 @@ class ScheduleEvaluator:
     
     def evaluate_recurrent(self, use_trainset=False):
         """
-        Evaluates the RecGNN model on the dataset using Teacher Forcing (Unrolled Sequence).
+        Evaluates the RecGNN model on the dataset using Teacher Forcing with Non-Overlapped Chunking.
         Returns the average loss, F1 scores, accuracies, and cumulative confusion matrices.
         """
         schedule_dataset = self.schedule_train_dataset if use_trainset else self.schedule_val_dataset
         self.model.eval()
         dataloader = DataLoader(schedule_dataset, batch_size=self.batch_size, shuffle=False)
-
+        
         total_epoch_loss = 0.0
         total_epoch_f1 = 0.0
         total_epoch_accuracy = 0.0
-
+        
         #single heads performance tracking
         total_epoch_activation_loss = 0.0
         total_epoch_assignment_loss = 0.0
@@ -699,22 +699,26 @@ class ScheduleEvaluator:
         total_epoch_activation_f1 = 0.0
         total_epoch_assignment_f1 = 0.0
         total_epoch_sequence_f1 = 0.0
-
+        
         #tracking accuracies
         total_epoch_activation_accuracy = 0.0
         total_epoch_assignment_accuracy = 0.0
         total_epoch_sequence_accuracy = 0.0
-
+        
         act_cm = np.zeros((2, 2), dtype=int)
         assign_cm = np.zeros((2, 2), dtype=int)
         seq_cm = np.zeros((2, 2), dtype=int)
-
+        
         num_batches_processed = 0
-
+        total_chunks_processed = 0
+        
         with torch.no_grad():
             for batch_idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Evaluating RecGNN on {'training' if use_trainset else 'validation'} set"):
                 batch = batch.to(self.device)
-
+                
+                #augumentating the validation batch with spatial transformations to test robustness (TTA)
+                batch = self.schedule_dataset.apply_spatial_augmentation(batch) if self.use_spatial_augmentation else batch
+                
                 batch_dict_arg = {
                     'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch') else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=self.device),
                     'order': batch['order'].batch if hasattr(batch['order'], 'batch') else torch.zeros(batch['order'].x.size(0), dtype=torch.long, device=self.device)
@@ -727,9 +731,29 @@ class ScheduleEvaluator:
                     op_id = true_assign_edges[0, i].item()
                     order_id = true_assign_edges[1, i].item()
                     ground_truth_steps.append((op_id, order_id))
-
+                    
                 if len(ground_truth_steps) == 0:
                     continue
+
+                #group ground truth into non-overlapped chunks
+                chunks = []
+                current_chunk = []
+                used_ops = set()
+                used_orders = set()
+
+                for step_op, step_order in ground_truth_steps:
+                    if step_op in used_ops or step_order in used_orders:
+                        chunks.append(current_chunk)
+                        current_chunk = [(step_op, step_order)]
+                        used_ops = {step_op}
+                        used_orders = {step_order}
+                    else:
+                        current_chunk.append((step_op, step_order))
+                        used_ops.add(step_op)
+                        used_orders.add(step_order)
+                
+                if current_chunk:
+                    chunks.append(current_chunk)
 
                 static_embs = None
                 op_hidden = None
@@ -738,7 +762,7 @@ class ScheduleEvaluator:
                 num_orders = batch['order'].x.size(0)
                 order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=self.device)
                 new_order_x = torch.cat([batch['order'].x, order_dynamic], dim=1)
-
+                
                 num_ops = batch['operator'].x.size(0)
                 op_batch = batch_dict_arg['operator']
                 h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1) 
@@ -746,7 +770,7 @@ class ScheduleEvaluator:
                 
                 op_dynamic = torch.cat([h_fixed_initial, op_xy_initial], dim=1)
                 new_op_x = torch.cat([batch['operator'].x, op_dynamic], dim=1)
-
+                
                 x_dict_raw = {
                     'order': new_order_x.clone(),
                     'operator': new_op_x.clone()
@@ -757,8 +781,8 @@ class ScheduleEvaluator:
                 batch_l_assign = 0.0
                 batch_l_seq = 0.0
 
-                for step, (true_op_id, true_order_id) in enumerate(ground_truth_steps):
-                    
+                for chunk_idx, current_chunk_steps in enumerate(chunks):
+
                     new_op_hidden, preds, static_embs = self.model(
                         x_dict_raw=x_dict_raw,
                         edge_index_dict=batch.edge_index_dict,
@@ -775,61 +799,62 @@ class ScheduleEvaluator:
                     if op_hidden is None:
                         op_hidden = static_embs['operator']
 
-                    #target label injection for ground truth
+                    #target label injection for ground truth chunks
                     target_assign = torch.zeros_like(preds['assignment'])
-                    edge_mask = (batch['operator', 'assign', 'order'].edge_index[0] == true_op_id) & \
-                                (batch['operator', 'assign', 'order'].edge_index[1] == true_order_id)
-                    target_assign[edge_mask] = 1.0
-
                     target_seq = torch.zeros_like(preds['sequence'])
-                    if hasattr(batch['order', 'to', 'order'], 'edge_index'):
-                        seq_mask = (batch['order', 'to', 'order'].edge_index[1] == true_order_id)
-                        target_seq[seq_mask] = 1.0
+                    chunk_edge_masks = []
+
+                    for true_op_id, true_order_id in current_chunk_steps:
+                        edge_mask = (batch['operator', 'assign', 'order'].edge_index[0] == true_op_id) & \
+                                    (batch['operator', 'assign', 'order'].edge_index[1] == true_order_id)
+                        target_assign[edge_mask] = 1.0
+                        chunk_edge_masks.append((true_op_id, true_order_id, edge_mask))
+                        
+                        if hasattr(batch['order', 'to', 'order'], 'edge_index'):
+                            seq_mask = (batch['order', 'to', 'order'].edge_index[1] == true_order_id)
+                            target_seq[seq_mask] = 1.0
 
                     original_assign_y = batch['operator', 'assign', 'order'].y.clone()
                     original_seq_y = batch['order', 'to', 'order'].y.clone() if hasattr(batch['order', 'to', 'order'], 'y') else None
-
+                    
                     batch['operator', 'assign', 'order'].y = target_assign
                     if original_seq_y is not None:
                         batch['order', 'to', 'order'].y = target_seq
-
+                        
                     #calculate loss
                     step_loss_tensor, l_act, l_assign, l_seq = self.weighted_loss(preds, batch, batch.u)
                     
                     batch['operator', 'assign', 'order'].y = original_assign_y
                     if original_seq_y is not None:
                         batch['order', 'to', 'order'].y = original_seq_y
-
+                        
                     batch_loss += step_loss_tensor.item() if isinstance(step_loss_tensor, torch.Tensor) else step_loss_tensor
                     batch_l_assign += l_assign
                     batch_l_act += l_act
                     batch_l_seq += l_seq
 
-                    #dynamic state update
+                    #dynamic state update for ALL steps in chunk
                     next_order_x = x_dict_raw['order'].clone()
                     next_op_x = x_dict_raw['operator'].clone()
+                    next_last_order_emb = last_order_emb.clone()
                     
-                    next_order_x[true_order_id, 10] = 1.0 
-                    
-                    time_taken = batch['operator', 'assign', 'order'].edge_attr[edge_mask, 0]
-                    if batch['operator', 'assign', 'order'].edge_attr.size(1) > 1:
-                        time_taken += batch['operator', 'assign', 'order'].edge_attr[edge_mask, 1]
-                    
-                    next_op_x[true_op_id, 15] -= time_taken.squeeze() 
-                    next_op_x[true_op_id, 16] = next_order_x[true_order_id, 4]
-                    next_op_x[true_op_id, 17] = next_order_x[true_order_id, 5]
+                    for true_op_id, true_order_id, edge_mask in chunk_edge_masks:
+                        next_order_x[true_order_id, 10] = 1.0 
+                        
+                        time_taken = batch['operator', 'assign', 'order'].edge_attr[edge_mask, 0]
+                        if batch['operator', 'assign', 'order'].edge_attr.size(1) > 1:
+                            time_taken += batch['operator', 'assign', 'order'].edge_attr[edge_mask, 1]
+                            
+                        next_op_x[true_op_id, 15] -= time_taken.squeeze() 
+                        next_op_x[true_op_id, 16] = next_order_x[true_order_id, 4]
+                        next_op_x[true_op_id, 17] = next_order_x[true_order_id, 5]
+                        
+                        next_last_order_emb[true_op_id] = static_embs['order'][true_order_id]
 
                     x_dict_raw = {'order': next_order_x, 'operator': next_op_x}
-
-                    #pass memory forward
-                    next_last_order_emb = last_order_emb.clone()
-                    next_last_order_emb[true_op_id] = static_embs['order'][true_order_id]
                     last_order_emb = next_last_order_emb
+                    op_hidden = new_op_hidden
                     
-                    next_op_hidden = op_hidden.clone()
-                    next_op_hidden[true_op_id] = new_op_hidden[true_op_id]
-                    op_hidden = next_op_hidden
-
                 #evaluation metrics on the final output state
                 measurements = self.calculate_metrics(preds, batch)
                 f1_measurements = self.calc_overall_metrics(preds, batch)
@@ -848,19 +873,19 @@ class ScheduleEvaluator:
                 act_acc = measurements.get('act_acc', 0.0)
                 assign_acc = measurements.get('assign_acc', 0.0)
                 seq_acc = measurements.get('seq_acc', 0.0)
-                
+
                 total_epoch_activation_accuracy += act_acc
                 total_epoch_assignment_accuracy += assign_acc
                 total_epoch_sequence_accuracy += seq_acc
                 total_epoch_accuracy += (act_acc + assign_acc + seq_acc) / 3.0
 
-                #normalize losses by the number of steps taken in this batch
-                num_steps = len(ground_truth_steps)
-                total_epoch_loss += (batch_loss / num_steps)
-                total_epoch_activation_loss += (batch_l_act / num_steps)
-                total_epoch_assignment_loss += (batch_l_assign / num_steps)
-                total_epoch_sequence_loss += (batch_l_seq / num_steps)
-                
+                #normalize losses by the number of chunks taken in this batch
+                num_chunks = len(chunks)
+                total_epoch_loss += (batch_loss / num_chunks)
+                total_epoch_activation_loss += (batch_l_act / num_chunks)
+                total_epoch_assignment_loss += (batch_l_assign / num_chunks)
+                total_epoch_sequence_loss += (batch_l_seq / num_chunks)
+
                 num_batches_processed += 1
 
         if num_batches_processed == 0:
