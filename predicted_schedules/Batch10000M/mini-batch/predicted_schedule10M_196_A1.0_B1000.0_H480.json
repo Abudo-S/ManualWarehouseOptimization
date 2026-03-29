@@ -4,7 +4,6 @@
         "num_operators": 10,
         "valid": true,
         "schedule_id": "schedule10M_196_A1.0_B1000.0_H480",
-        "unassigned_orders": 0,
         "horizon_valid": true,
         "horizon_violations": []
     },
@@ -20,10 +19,10 @@
                         "finish_time": 22.38,
                         "processing_duration": 11.21,
                         "travel_duration": 11.17,
-                        "successor": 3887234
+                        "successor": 3880835
                     },
                     {
-                        "mission_id": 3887234,
+                        "mission_id": 3880835,
                         "start_time": 33.15,
                         "finish_time": 44.36,
                         "processing_duration": 11.21,
@@ -44,20 +43,20 @@
                         "finish_time": 88.31,
                         "processing_duration": 11.21,
                         "travel_duration": 10.76,
-                        "successor": 3890876
+                        "successor": 3887234
                     },
                     {
-                        "mission_id": 3890876,
+                        "mission_id": 3887234,
                         "start_time": 99.07,
                         "finish_time": 110.28,
                         "processing_duration": 11.21,
                         "travel_duration": 10.76,
-                        "successor": 3880835
+                        "successor": 3890876
                     },
                     {
-                        "mission_id": 3880835,
-                        "start_time": 121.04,
-                        "finish_time": 132.25,
+                        "mission_id": 3890876,
+                        "start_time": 121.05,
+                        "finish_time": 132.26,
                         "processing_duration": 11.21,
                         "travel_duration": 10.76,
                         "successor": null

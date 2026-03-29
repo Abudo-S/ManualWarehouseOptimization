@@ -4,7 +4,6 @@
         "num_operators": 10,
         "valid": true,
         "schedule_id": "schedule10M_325_A1.0_B1000.0_H90",
-        "unassigned_orders": 0,
         "horizon_valid": true,
         "horizon_violations": []
     },

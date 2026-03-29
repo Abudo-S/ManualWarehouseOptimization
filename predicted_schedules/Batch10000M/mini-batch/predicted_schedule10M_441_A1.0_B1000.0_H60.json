@@ -4,7 +4,6 @@
         "num_operators": 10,
         "valid": true,
         "schedule_id": "schedule10M_441_A1.0_B1000.0_H60",
-        "unassigned_orders": 0,
         "horizon_valid": true,
         "horizon_violations": []
     },
@@ -20,14 +19,14 @@
                         "finish_time": 21.17,
                         "processing_duration": 10.3,
                         "travel_duration": 10.87,
-                        "successor": 3888145
+                        "successor": 3882118
                     },
                     {
-                        "mission_id": 3888145,
-                        "start_time": 31.4,
-                        "finish_time": 41.7,
-                        "processing_duration": 10.29,
-                        "travel_duration": 10.24,
+                        "mission_id": 3882118,
+                        "start_time": 31.42,
+                        "finish_time": 41.65,
+                        "processing_duration": 10.23,
+                        "travel_duration": 10.25,
                         "successor": null
                     }
                 ]
@@ -39,11 +38,11 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3882118,
-                        "start_time": 10.89,
-                        "finish_time": 21.12,
-                        "processing_duration": 10.23,
-                        "travel_duration": 10.89,
+                        "mission_id": 3888145,
+                        "start_time": 10.86,
+                        "finish_time": 21.15,
+                        "processing_duration": 10.29,
+                        "travel_duration": 10.86,
                         "successor": null
                     }
                 ]
