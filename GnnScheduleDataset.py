@@ -119,7 +119,6 @@ class GnnScheduleDataset(Dataset):
         )
         
         return data
-    import torch
 
     def apply_spatial_augmentation(self, batch):
         """
@@ -127,6 +126,8 @@ class GnnScheduleDataset(Dataset):
         Expects order features where indices 4-9 are: FROM_X, FROM_Y, FROM_Z, TO_X, TO_Y, TO_Z.
         It could be using inside the training loop to change a single batch.
         """
+        #print("Applying spatial augmentation to batch...")
+
         #flip x-axis randomly (50% chance)
         if random.random() > 0.5:
             #assuming origin is 0, we can just invert the sign

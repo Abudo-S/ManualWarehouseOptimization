@@ -81,7 +81,7 @@ class MultiCriteriaRecGNNModel(torch.nn.Module):
         self.op_rnn = GRUCell(input_size=hidden_dim + 3, hidden_size=hidden_dim)
         
         #activation head
-        #RNN state (64) + FLEET CONTEXT (64) + global_u (3) + demand (1) + monotonic_id (1) + op_pe (8) = 141
+        #RNN state (64) + fleet_context (64) + global_u (3) + demand (1) + monotonic_id (1) + op_pe (8) = 141
         input_dim_activation = (2 * hidden_dim) + 3 + 1 + 1 + 8
         self.activation_head = Sequential(
             Linear(input_dim_activation, hidden_dim),
@@ -90,7 +90,7 @@ class MultiCriteriaRecGNNModel(torch.nn.Module):
         )
 
         #assignment head
-        #RNN state (64) + FLEET CONTEXT (64) + order emb (64) + global_u (3) + time (2) + act_prob (1) + monotonic_id (1) + op_pe (8) + affinity_score (1) = 208
+        #RNN state (64) + fleet_context (64) + order emb (64) + global_u (3) + time (2) + act_prob (1) + monotonic_id (1) + op_pe (8) + affinity_score (1) = 208
         input_dim_assignment = (3 * hidden_dim) + 3 + 2 + 1 + 1 + 8 + 1
         self.assign_head = Sequential(
             Linear(input_dim_assignment , hidden_dim),
