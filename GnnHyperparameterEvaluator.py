@@ -35,6 +35,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
                  learning_rate=0.001, #default lr (not used, will be read from config)
                  n_epochs=50,
                  default_threshold=CLASSIFICATION_THRESHOLD,
+                 is_recurrent=True, #for recGnn
                  tune_multiple_thresholds=False): #whether to tune separate thresholds per head or a single shared one
 
         
@@ -46,6 +47,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         self.learning_rate = learning_rate
         self.n_epochs = n_epochs
         self.default_threshold = default_threshold
+        self.is_recurrent = is_recurrent
         self.tune_multiple_thresholds = tune_multiple_thresholds
 
         super().__init__(model, schedule_dataset, batch_size)
@@ -350,10 +352,494 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
 
         return best_f1, best_thresh
 
+    def train_and_evaluate_multi_optimizer_recurrent(self, config, dataset, k_folds=N_FOLDS):
+        """
+        Recurrent version of train_and_evaluate_multi_optimizer.
+        Uses MultiCriteriaRecGNNModel with a Static Encoder + Recurrent Decoder (GRUCell).
+        Training uses teacher-forcing BPTT, unrolled over ground-truth assignment steps.
+
+        Trunk params: order_lin + op_lin + convs + op_rnn (full backbone).
+        Head params : activation_head, assign_head, seq_head (independent lrs).
+
+        Returns:
+            avg_score  (float): Average F1 score across folds.
+            avg_thresh (float | dict): Average best threshold(s) across folds.
+        """
+        from MultiCriteriaRecGNNModel import MultiCriteriaRecGNNModel
+
+        kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+        fold_results = []
+
+        print(
+            f"Starting {k_folds}-Fold CV (multi-optimizer RECURRENT) "
+            f"({'separate-thresholds' if self.tune_multiple_thresholds else 'single-threshold'})..."
+        )
+
+        for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
+            #data splitting
+            train_dataset = [dataset[i] for i in train_idx]
+            val_dataset   = [dataset[i] for i in val_idx]
+
+            train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
+            val_loader   = DataLoader(val_dataset,   batch_size=config['batch_size'], shuffle=False)
+
+            #model initialisation
+            metadata = (dataset[0].metadata()[0], dataset[0].metadata()[1])
+            model = MultiCriteriaRecGNNModel(
+                metadata   = metadata,
+                hidden_dim = config['hidden_dim'],
+                heads      = config['heads'],
+                num_layers = config.get('num_layers', 3),
+                dropout    = config.get('dropout', 0.2),
+            ).to(self.device)
+
+            #disjoint parameter groups
+            #trunk = static encoder (order_lin, op_lin, convs) + recurrent decoder (op_rnn)
+            trunk_params = (
+                list(model.order_lin.parameters()) +
+                list(model.op_lin.parameters())    +
+                list(model.convs.parameters())     +
+                list(model.op_rnn.parameters()) #GRUCell is backbone, not a head
+            )
+            activation_params = list(model.activation_head.parameters())
+            assignment_params = list(model.assign_head.parameters())
+            sequence_params   = list(model.seq_head.parameters())
+
+            #separate optimizers
+            opt_trunk      = torch.optim.Adam(trunk_params,      lr=config.get('lr_trunk',      self.learning_rate))
+            opt_activation = torch.optim.Adam(activation_params, lr=config.get('lr_activation', self.learning_rate))
+            opt_assignment = torch.optim.Adam(assignment_params, lr=config.get('lr_assignment', self.learning_rate))
+            opt_sequence   = torch.optim.Adam(sequence_params,   lr=config.get('lr_sequence',   self.learning_rate))
+            optimizers = [opt_trunk, opt_activation, opt_assignment, opt_sequence]
+
+            #training loop
+            for epoch in range(self.n_epochs):
+                model.train()
+
+                for batch in train_loader:
+                    batch = batch.to(self.device)
+
+                    batch_dict_arg = {
+                        'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch')
+                                    else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=self.device),
+                        'order':    batch['order'].batch    if hasattr(batch['order'], 'batch')
+                                    else torch.zeros(batch['order'].x.size(0),    dtype=torch.long, device=self.device),
+                    }
+
+                    #collect ground-truth assignment steps for teacher forcing
+                    true_assign_edges = batch['operator', 'assign', 'order'].edge_index[
+                        :, batch['operator', 'assign', 'order'].y.flatten() == 1
+                    ]
+                    ground_truth_steps = [
+                        (true_assign_edges[0, i].item(), true_assign_edges[1, i].item())
+                        for i in range(true_assign_edges.size(1))
+                    ]
+                    if len(ground_truth_steps) == 0:
+                        continue
+
+                    #zero all gradients once before the bptt unroll
+                    for opt in optimizers:
+                        opt.zero_grad()
+
+                    #initialise dynamic features
+                    num_orders = batch['order'].x.size(0)
+                    order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=self.device)
+                    new_order_x   = torch.cat([batch['order'].x, order_dynamic], dim=1)
+
+                    num_ops = batch['operator'].x.size(0)
+                    op_batch = batch_dict_arg['operator']
+                    h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1)
+                    op_xy_initial = torch.zeros((num_ops, 2), dtype=torch.float, device=self.device)
+                    op_dynamic = torch.cat([h_fixed_initial, op_xy_initial], dim=1)
+                    new_op_x = torch.cat([batch['operator'].x, op_dynamic], dim=1)
+
+                    x_dict_raw = {'order': new_order_x.clone(), 'operator': new_op_x.clone()}
+                    static_embs = None
+                    op_hidden = None
+                    last_order_emb = None
+                    batch_loss = torch.tensor(0.0, device=self.device)
+
+                    #bptt unroll
+                    for step, (true_op_id, true_order_id) in enumerate(ground_truth_steps):
+
+                        new_op_hidden, preds, static_embs = model(
+                            x_dict_raw      = x_dict_raw,
+                            edge_index_dict = batch.edge_index_dict,
+                            edge_attr_dict  = batch.edge_attr_dict,
+                            u               = batch.u,
+                            batch_dict      = batch_dict_arg,
+                            static_embs     = static_embs,
+                            op_hidden       = op_hidden,
+                            last_order_emb  = last_order_emb,
+                        )
+
+                        if last_order_emb is None:
+                            last_order_emb = torch.zeros_like(static_embs['operator'])
+                        if op_hidden is None:
+                            op_hidden = static_embs['operator']
+
+                        #teacher-forcing targets
+                        edge_mask = (
+                            (batch['operator', 'assign', 'order'].edge_index[0] == true_op_id) &
+                            (batch['operator', 'assign', 'order'].edge_index[1] == true_order_id)
+                        )
+                        target_assign = torch.zeros_like(preds['assignment'])
+                        target_assign[edge_mask] = 1.0
+
+                        target_seq = torch.zeros_like(preds['sequence'])
+                        if hasattr(batch['order', 'to', 'order'], 'edge_index'):
+                            seq_mask = (batch['order', 'to', 'order'].edge_index[1] == true_order_id)
+                            target_seq[seq_mask] = 1.0
+
+                        #mask out already-completed sequence edges
+                        src_seq = batch['order', 'to', 'order'].edge_index[0]
+                        dst_seq = batch['order', 'to', 'order'].edge_index[1]
+                        completed_orders = torch.where(x_dict_raw['order'][:, 10] == 1.0)[0]
+                        completed_mask   = torch.isin(src_seq, completed_orders) & torch.isin(dst_seq, completed_orders)
+                        target_seq[completed_mask] = 0
+
+                        #inject step targets into batch for weighted_loss, then restore
+                        original_assign_y = batch['operator', 'assign', 'order'].y.clone()
+                        original_seq_y    = batch['order', 'to', 'order'].y.clone() \
+                                            if hasattr(batch['order', 'to', 'order'], 'y') else None
+
+                        batch['operator', 'assign', 'order'].y = target_assign
+                        if original_seq_y is not None:
+                            batch['order', 'to', 'order'].y = target_seq
+
+                        step_loss, _, _, _ = self.weighted_loss(preds, batch, batch.u)
+                        batch_loss = batch_loss + step_loss
+
+                        batch['operator', 'assign', 'order'].y = original_assign_y
+                        if original_seq_y is not None:
+                            batch['order', 'to', 'order'].y = original_seq_y
+
+                        #dynamic state update (teacher forcing)
+                        next_order_x = x_dict_raw['order'].clone()
+                        next_op_x    = x_dict_raw['operator'].clone()
+                        next_order_x[true_order_id, 10] = 1.0   #mark assigned
+
+                        time_taken = batch['operator', 'assign', 'order'].edge_attr[edge_mask, 0]
+                        if batch['operator', 'assign', 'order'].edge_attr.size(1) > 1:
+                            time_taken = time_taken + batch['operator', 'assign', 'order'].edge_attr[edge_mask, 1]
+
+                        next_op_x[true_op_id, 15] -= time_taken.squeeze()          #remaining h_fixed
+                        next_op_x[true_op_id, 16]  = next_order_x[true_order_id, 4]  #current X
+                        next_op_x[true_op_id, 17]  = next_order_x[true_order_id, 5]  #current Y
+                        x_dict_raw = {'order': next_order_x, 'operator': next_op_x}
+
+                        #pass memory forward; detach GRU state to prevent unbounded graph growth
+                        next_last_order_emb = last_order_emb.clone()
+                        next_last_order_emb[true_op_id] = static_embs['order'][true_order_id]
+                        last_order_emb = next_last_order_emb
+
+                        next_op_hidden = op_hidden.clone()
+                        next_op_hidden[true_op_id] = new_op_hidden[true_op_id].detach()
+                        op_hidden = next_op_hidden
+
+                    #single backward over the normalised bptt sum
+                    (batch_loss / len(ground_truth_steps)).backward()
+                    for opt in optimizers:
+                        opt.step()
+
+            #fold evaluation & threshold tuning
+            if self.tune_multiple_thresholds:
+                best_f1, best_thresh = self._evaluate_fold_recurrent_separate_thresholds(model, val_loader)
+            else:
+                best_f1, best_thresh = self._evaluate_fold_recurrent(model, val_loader)
+
+            fold_results.append({'val_score': best_f1, 'best_threshold': best_thresh})
+
+            thresh_str = (
+                str(best_thresh) if isinstance(best_thresh, float)
+                else str({k: round(v, 3) for k, v in best_thresh.items()})
+            )
+            print(f"Fold {fold + 1}/{k_folds} | F1: {best_f1:.4f} | Thresh: {thresh_str}")
+
+        #average across folds
+        avg_score = sum(r['val_score'] for r in fold_results) / k_folds
+
+        if self.tune_multiple_thresholds:
+            avg_thresh = {}
+            for k in fold_results[0]['best_threshold'].keys():
+                avg_thresh[k] = sum(r['best_threshold'][k] for r in fold_results) / k_folds
+        else:
+            avg_thresh = sum(r['best_threshold'] for r in fold_results) / k_folds
+
+        return avg_score, avg_thresh
+
+    def _evaluate_fold_recurrent(self, model, val_loader):
+        """
+        Recurrent fold evaluation (single shared threshold across all three heads).
+        Unrolls each batch step-by-step with teacher forcing, no gradient.
+
+        Returns:
+            best_f1     (float): Best F1 score found on the PR curve.
+            best_thresh (float): Corresponding optimal threshold.
+        """
+        model.eval()
+        all_probs  = []
+        all_labels = []
+
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(self.device)
+
+                batch_dict_arg = {
+                    'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch')
+                                else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=self.device),
+                    'order':    batch['order'].batch    if hasattr(batch['order'], 'batch')
+                                else torch.zeros(batch['order'].x.size(0),    dtype=torch.long, device=self.device),
+                }
+
+                true_assign_edges = batch['operator', 'assign', 'order'].edge_index[
+                    :, batch['operator', 'assign', 'order'].y.flatten() == 1
+                ]
+                ground_truth_steps = [
+                    (true_assign_edges[0, i].item(), true_assign_edges[1, i].item())
+                    for i in range(true_assign_edges.size(1))
+                ]
+                if len(ground_truth_steps) == 0:
+                    continue
+
+                num_orders = batch['order'].x.size(0)
+                order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=self.device)
+                new_order_x = torch.cat([batch['order'].x, order_dynamic], dim=1)
+
+                num_ops = batch['operator'].x.size(0)
+                op_batch = batch_dict_arg['operator']
+                h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1)
+                op_xy_initial = torch.zeros((num_ops, 2), dtype=torch.float, device=self.device)
+                op_dynamic = torch.cat([h_fixed_initial, op_xy_initial], dim=1)
+                new_op_x = torch.cat([batch['operator'].x, op_dynamic], dim=1)
+
+                x_dict_raw = {'order': new_order_x.clone(), 'operator': new_op_x.clone()}
+                static_embs = None
+                op_hidden = None
+                last_order_emb = None
+
+                for true_op_id, true_order_id in ground_truth_steps:
+                    new_op_hidden, preds, static_embs = model(
+                        x_dict_raw = x_dict_raw,
+                        edge_index_dict = batch.edge_index_dict,
+                        edge_attr_dict = batch.edge_attr_dict,
+                        u = batch.u,
+                        batch_dict = batch_dict_arg,
+                        static_embs = static_embs,
+                        op_hidden = op_hidden,
+                        last_order_emb = last_order_emb,
+                    )
+
+                    if last_order_emb is None:
+                        last_order_emb = torch.zeros_like(static_embs['operator'])
+                    if op_hidden is None:
+                        op_hidden = static_embs['operator']
+
+                    edge_mask = (
+                        (batch['operator', 'assign', 'order'].edge_index[0] == true_op_id) &
+                        (batch['operator', 'assign', 'order'].edge_index[1] == true_order_id)
+                    )
+                    target_assign = torch.zeros_like(preds['assignment'])
+                    target_assign[edge_mask] = 1.0
+
+                    target_seq = torch.zeros_like(preds['sequence'])
+                    if hasattr(batch['order', 'to', 'order'], 'edge_index'):
+                        seq_mask = (batch['order', 'to', 'order'].edge_index[1] == true_order_id)
+                        target_seq[seq_mask] = 1.0
+
+                    #aggregate all heads together (single shared threshold)
+                    all_probs.append(preds['activation'].cpu().numpy().flatten())
+                    all_labels.append(batch['operator'].y.cpu().numpy().flatten())
+
+                    all_probs.append(preds['assignment'].cpu().numpy().flatten())
+                    all_labels.append(target_assign.cpu().numpy().flatten())
+
+                    all_probs.append(preds['sequence'].cpu().numpy().flatten())
+                    all_labels.append(target_seq.cpu().numpy().flatten())
+
+                    #dynamic state update
+                    next_order_x = x_dict_raw['order'].clone()
+                    next_op_x    = x_dict_raw['operator'].clone()
+                    next_order_x[true_order_id, 10] = 1.0
+
+                    time_taken = batch['operator', 'assign', 'order'].edge_attr[edge_mask, 0]
+                    if batch['operator', 'assign', 'order'].edge_attr.size(1) > 1:
+                        time_taken = time_taken + batch['operator', 'assign', 'order'].edge_attr[edge_mask, 1]
+
+                    next_op_x[true_op_id, 15] -= time_taken.squeeze()
+                    next_op_x[true_op_id, 16]  = next_order_x[true_order_id, 4]
+                    next_op_x[true_op_id, 17]  = next_order_x[true_order_id, 5]
+                    x_dict_raw = {'order': next_order_x, 'operator': next_op_x}
+
+                    next_last_order_emb = last_order_emb.clone()
+                    next_last_order_emb[true_op_id] = static_embs['order'][true_order_id]
+                    last_order_emb = next_last_order_emb
+
+                    next_op_hidden = op_hidden.clone()
+                    next_op_hidden[true_op_id] = new_op_hidden[true_op_id]
+                    op_hidden = next_op_hidden
+
+        y_scores = np.concatenate(all_probs)
+        y_true = np.concatenate(all_labels)
+
+        precisions, recalls, thresh_curve = precision_recall_curve(y_true, y_scores)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+            f1_scores = np.nan_to_num(f1_scores)
+
+        best_idx = np.argmax(f1_scores)
+        if best_idx < len(thresh_curve):
+            return float(f1_scores[best_idx]), float(thresh_curve[best_idx])
+        return 0.0, self.default_threshold
+
+    def _evaluate_fold_recurrent_separate_thresholds(self, model, val_loader):
+        """
+        Recurrent fold evaluation with a separate optimal threshold per head.
+        Mirrors _evaluate_fold_separate_thresholds but with recurrent teacher-forcing unrolling.
+
+        Returns:
+            avg_f1     (float): Average F1 across all three heads.
+            thresholds (dict):  {'activation': t1, 'assignment': t2, 'sequence': t3}
+        """
+        model.eval()
+        head_data = {
+            'activation': {'probs': [], 'labels': []},
+            'assignment': {'probs': [], 'labels': []},
+            'sequence':   {'probs': [], 'labels': []},
+        }
+
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(self.device)
+
+                batch_dict_arg = {
+                    'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch')
+                                else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=self.device),
+                    'order':    batch['order'].batch    if hasattr(batch['order'], 'batch')
+                                else torch.zeros(batch['order'].x.size(0),    dtype=torch.long, device=self.device),
+                }
+
+                true_assign_edges = batch['operator', 'assign', 'order'].edge_index[
+                    :, batch['operator', 'assign', 'order'].y.flatten() == 1
+                ]
+                ground_truth_steps = [
+                    (true_assign_edges[0, i].item(), true_assign_edges[1, i].item())
+                    for i in range(true_assign_edges.size(1))
+                ]
+                if len(ground_truth_steps) == 0:
+                    continue
+
+                num_orders = batch['order'].x.size(0)
+                order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=self.device)
+                new_order_x   = torch.cat([batch['order'].x, order_dynamic], dim=1)
+
+                num_ops = batch['operator'].x.size(0)
+                op_batch = batch_dict_arg['operator']
+                h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1)
+                op_xy_initial = torch.zeros((num_ops, 2), dtype=torch.float, device=self.device)
+                op_dynamic = torch.cat([h_fixed_initial, op_xy_initial], dim=1)
+                new_op_x = torch.cat([batch['operator'].x, op_dynamic], dim=1)
+
+                x_dict_raw = {'order': new_order_x.clone(), 'operator': new_op_x.clone()}
+                static_embs = None
+                op_hidden = None
+                last_order_emb = None
+
+                for true_op_id, true_order_id in ground_truth_steps:
+                    new_op_hidden, preds, static_embs = model(
+                        x_dict_raw = x_dict_raw,
+                        edge_index_dict = batch.edge_index_dict,
+                        edge_attr_dict = batch.edge_attr_dict,
+                        u = batch.u,
+                        batch_dict = batch_dict_arg,
+                        static_embs = static_embs,
+                        op_hidden = op_hidden,
+                        last_order_emb = last_order_emb,
+                    )
+
+                    if last_order_emb is None:
+                        last_order_emb = torch.zeros_like(static_embs['operator'])
+                    if op_hidden is None:
+                        op_hidden = static_embs['operator']
+
+                    edge_mask = (
+                        (batch['operator', 'assign', 'order'].edge_index[0] == true_op_id) &
+                        (batch['operator', 'assign', 'order'].edge_index[1] == true_order_id)
+                    )
+                    target_assign = torch.zeros_like(preds['assignment'])
+                    target_assign[edge_mask] = 1.0
+
+                    target_seq = torch.zeros_like(preds['sequence'])
+                    if hasattr(batch['order', 'to', 'order'], 'edge_index'):
+                        seq_mask = (batch['order', 'to', 'order'].edge_index[1] == true_order_id)
+                        target_seq[seq_mask] = 1.0
+
+                    #per-head storage
+                    head_data['activation']['probs'].append( preds['activation'].cpu().numpy().flatten())
+                    head_data['activation']['labels'].append(batch['operator'].y.cpu().numpy().flatten())
+
+                    head_data['assignment']['probs'].append( preds['assignment'].cpu().numpy().flatten())
+                    head_data['assignment']['labels'].append(target_assign.cpu().numpy().flatten())
+
+                    head_data['sequence']['probs'].append( preds['sequence'].cpu().numpy().flatten())
+                    head_data['sequence']['labels'].append(target_seq.cpu().numpy().flatten())
+
+                    # dynamic state update
+                    next_order_x = x_dict_raw['order'].clone()
+                    next_op_x    = x_dict_raw['operator'].clone()
+                    next_order_x[true_order_id, 10] = 1.0
+
+                    time_taken = batch['operator', 'assign', 'order'].edge_attr[edge_mask, 0]
+                    if batch['operator', 'assign', 'order'].edge_attr.size(1) > 1:
+                        time_taken = time_taken + batch['operator', 'assign', 'order'].edge_attr[edge_mask, 1]
+
+                    next_op_x[true_op_id, 15] -= time_taken.squeeze()
+                    next_op_x[true_op_id, 16]  = next_order_x[true_order_id, 4]
+                    next_op_x[true_op_id, 17]  = next_order_x[true_order_id, 5]
+                    x_dict_raw = {'order': next_order_x, 'operator': next_op_x}
+
+                    next_last_order_emb = last_order_emb.clone()
+                    next_last_order_emb[true_op_id] = static_embs['order'][true_order_id]
+                    last_order_emb = next_last_order_emb
+
+                    next_op_hidden = op_hidden.clone()
+                    next_op_hidden[true_op_id] = new_op_hidden[true_op_id]
+                    op_hidden = next_op_hidden
+
+        final_thresholds = {}
+        final_f1s        = {}
+
+        for head, data in head_data.items():
+            if not data['probs']:
+                continue
+
+            y_scores = np.concatenate(data['probs'])
+            y_true   = np.concatenate(data['labels'])
+
+            precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+                f1_scores = np.nan_to_num(f1_scores)
+
+            best_idx = np.argmax(f1_scores)
+            if best_idx < len(thresholds):
+                final_thresholds[head] = float(thresholds[best_idx])
+                final_f1s[head]        = float(f1_scores[best_idx])
+            else:
+                final_thresholds[head] = self.default_threshold
+                final_f1s[head]        = 0.0
+
+        avg_f1 = sum(final_f1s.values()) / len(final_f1s) if final_f1s else 0.0
+        return avg_f1, final_thresholds
+
     #wrapper to select train_and_evaluate method
     def train_and_evaluate(self, config, dataset, k_folds=N_FOLDS):
         if 'lr_trunk' in config:
-            return self.train_and_evaluate_multi_optimizer(config, dataset, k_folds)
+            if self.is_recurrent:
+                print("RecGNN hyperparameter tuning...")
+                return self.train_and_evaluate_multi_optimizer_recurrent(config, dataset, k_folds)
+            else:
+                return self.train_and_evaluate_multi_optimizer(config, dataset, k_folds)
         else:
             return self.train_and_evaluate_single_optimizer(config, dataset, k_folds)
     
