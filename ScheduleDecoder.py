@@ -4513,10 +4513,16 @@ if __name__ == "__main__":
 
     #RecGNN - Augumented data (4 augmentations) - softplus heuristic-boost capacity penalty + no alpha/beta loss + no assignment monotonic id
     #fallback to decoupled tasks - tuned heuristic-boost thresholds for feasibility validation (B1000) droupout 0.1
-    best_thresholds =  {
-        'activation': 0.8441,
-        'assignment': 0.1600,
-        'sequence': 0.3155
+    # best_thresholds =  {
+    #     'activation': 0.8441,
+    #     'assignment': 0.1600,
+    #     'sequence': 0.3155
+    # }
+
+    best_thresholds = {
+        'activation': 0.7827,
+        'assignment': 0.1785,
+        'sequence': 0.3564
     }
 
     if use_autoregressive_decoding:
