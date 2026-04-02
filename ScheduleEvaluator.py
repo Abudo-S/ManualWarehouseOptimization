@@ -281,8 +281,12 @@ class ScheduleEvaluator:
         true_assign = ground_truth['operator', 'assign', 'order'].y.view(-1, 1)
         true_seq = ground_truth['order', 'to', 'order'].y.view(-1, 1)
         
-        #BCE losses
-        loss_act = F.binary_cross_entropy(pred_act, true_act)
+
+        #BCE losses        
+        pos_weight = (true_act.numel() - true_act.sum()) / true_act.sum().clamp(min=1.0)
+        act_weight_vector = torch.where(true_act == 1, pos_weight, 1.0)
+        loss_act = F.binary_cross_entropy(pred_act, true_act, weight=act_weight_vector) #weighted_act_bce loss
+        #loss_act = F.binary_cross_entropy(pred_act, true_act)
         loss_assign = F.binary_cross_entropy(pred_assign, true_assign)
         loss_seq = F.binary_cross_entropy(pred_seq, true_seq)
         
