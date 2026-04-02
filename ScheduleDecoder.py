@@ -4320,7 +4320,7 @@ def decode_autoregressive(model, loader, scheduleDecoder, isRecurrent=True, devi
     logging.info(f"Execution times: {all_executon_times}")
 
 if __name__ == "__main__":
-    use_large_scale = False
+    use_large_scale = True
     use_autoregressive_decoding = True
 
     if use_large_scale:
@@ -4518,11 +4518,17 @@ if __name__ == "__main__":
     #     'assignment': 0.1600,
     #     'sequence': 0.3155
     # }
+    
+    # best_thresholds = {
+    #     'activation': 0.7827,
+    #     'assignment': 0.1785,
+    #     'sequence': 0.3564
+    # }
 
     best_thresholds = {
-        'activation': 0.7827,
-        'assignment': 0.1785,
-        'sequence': 0.3564
+        'activation': 0.4915,
+        'assignment': 0.4860,
+        'sequence': 0.4822
     }
 
     if use_autoregressive_decoding:
