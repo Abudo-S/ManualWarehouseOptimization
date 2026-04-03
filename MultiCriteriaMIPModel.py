@@ -807,6 +807,103 @@ class MultiCriteriaMIPModel:
         
         return instance, results3
     
+    def solve_hybrid_two_phase(self, 
+                               mip_gap_phase1=None, 
+                               mip_gap_phase2=None,
+                               time_limit_phase1=None,
+                               time_limit_phase2=None, 
+                               bin_packing_cut=True,
+                               solver_name='cplex_direct'):
+        '''
+        Solve the MIP model using a Hybrid Two-Phase approach (pure lexicographic (Lexico) optimization) 
+        to eliminate routing noise, 
+        while preserving the true optimal trade-off between operators and makespan.
+        
+        Phase 1: Minimize the original weighted objective (Alpha * Z + Beta * sum(y)).
+                 Finds the globally optimal number of operators and makespan.
+        Phase 2: Lock the operators and makespan. Minimize the sum of completion times 
+                 to enforce perfectly efficient routes for non-bottleneck operators.
+        '''
+        assert isinstance(self.model, ConcreteModel), "the model must be a ConcreteModel to use hybrid solving!"
+        is_optimal = True
+        
+        instance = self.model
+        if bin_packing_cut:
+            self.add_bin_packing_cut(self.model)
+            
+        solver = SolverFactory(solver_name)
+        
+        #phase 1: weighted-global optimization
+        print("\n--- Starting Phase 1: Optimizing global trade-off (Alpha*Z + Beta*y) ---")
+        
+        self.model.Objective.activate()
+        
+        #deactivate any leftover objectives if this instance was run previously
+        if hasattr(self.model, 'MinOperators'): self.model.MinOperators.deactivate()
+        if hasattr(self.model, 'MinMakespan'): self.model.MinMakespan.deactivate()
+        if hasattr(self.model, 'MinTotalFlow'): self.model.MinTotalFlow.deactivate()
+        
+        if time_limit_phase1 is not None:
+            solver.options['timelimit'] = time_limit_phase1 
+        if mip_gap_phase1 is not None:
+            solver.options['mipgap'] = mip_gap_phase1 
+            
+        results1 = solver.solve(self.model, tee=True)
+        
+        #reset solver options to prevent leaking into phase 2
+        if time_limit_phase1 is not None:
+            solver.options['timelimit'] = 0 
+        if mip_gap_phase1 is not None:
+            solver.options['mipgap'] = 0 
+            
+        if results1.solver.termination_condition != TerminationCondition.optimal:
+            is_optimal = False
+            print("Phase 1 failed to find optimal trade-off!")
+            return instance, results1, is_optimal
+            
+        #extract the globally optimal decisions
+        best_ops_count = sum(round(self.model.y[i].value) for i in self.model.I_max)
+        best_makespan = self.model.Z.value
+        
+        print(f"Phase 1 complete: Optimal trade-off uses {best_ops_count} operators with Makespan {best_makespan:.2f}.")
+        
+        #phase 2: noise elimination
+        print("\n--- Starting Phase 2: Eliminating noise (Optimizing non-bottleneck routes) ---")
+        
+        #lock the active/inactive operators permanently
+        for i in self.model.I_max:
+            self.model.y[i].fix(round(self.model.y[i].value))
+            
+        #lock the makespan (with a 1e-4 tolerance to avoid CPLEX numerical infeasibility)
+        self.model.MakespanLock = Constraint(expr=self.model.Z <= best_makespan + 1e-4)
+        
+        #swap the objective to minimize total flow time
+        self.model.Objective.deactivate()
+        
+        #We don't use slack here. We force strict feasibility to ensure valid GNN data.
+        self.model.MinTotalFlow = Objective(
+            expr=sum(self.model.C[j] for j in self.model.J), 
+            sense=minimize
+        )
+        
+        if time_limit_phase2 is not None:
+            solver.options['timelimit'] = time_limit_phase2 
+        if mip_gap_phase2 is not None:
+            solver.options['mipgap'] = mip_gap_phase2
+            
+        results2 = solver.solve(self.model, tee=True)
+        
+        if results2.solver.termination_condition != TerminationCondition.optimal:
+            is_optimal = False
+            print("Warning: Phase 2 suboptimal or infeasible. (Check time limits or numerical tolerances)")
+            
+        print("\n=== Final Schedule (Hybrid Two-Phase) ===")
+        print(f"Operators Used: {best_ops_count}")
+        print(f"Makespan (Z): {self.model.Z.value:.2f} min")
+        print(f"Total Flow: {sum(self.model.C[j].value for j in self.model.J):.2f} min")
+        
+        return instance, results2, is_optimal
+    
     def display_solution(self, instance=None):
         '''
         Display the solution of the MIP model.
