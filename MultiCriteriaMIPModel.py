@@ -585,7 +585,7 @@ class MultiCriteriaMIPModel:
 
         model.BinPackingCut = Constraint(expr=sum(model.y[i] for i in model.I_max) >= min_y_int)
 
-    def solve_two_phase(self,               
+    def solve_two_phase_lexicographic(self,               
                         mip_gap_phase1=None, 
                         mip_gap_phase2=None,
                         time_limit_phase1=None,
@@ -644,8 +644,8 @@ class MultiCriteriaMIPModel:
         #phase 2: Min makespan  
         self.model.MinOperators.deactivate()
 
-        #60 min buffer slack for capacity constraints (to avoid infeasibility, but introduces suboptimality)        
-        self.model.Slack = Var(self.model.I_max, bounds=(0, 60)) 
+        #1 min buffer slack for capacity constraints (to avoid infeasibility, but introduces suboptimality)        
+        self.model.Slack = Var(self.model.I_max, bounds=(0, 1)) 
         def relaxed_capacity_check(model, i):
             #check active operators only
             return model.C_last[i] <= model.H_fixed * model.y[i] + model.Slack[i]
@@ -677,6 +677,135 @@ class MultiCriteriaMIPModel:
 
         return instance, results2
 
+    def solve_three_phase_lexicographic(self, 
+                          mip_gap_phase1=None, 
+                          mip_gap_phase2=None,
+                          mip_gap_phase3=None,
+                          time_limit_phase1=None,
+                          time_limit_phase2=None,
+                          time_limit_phase3=None, 
+                          bin_packing_cut=True,
+                          relax_second_phase=True,
+                          solver_name='cplex_direct'):
+        '''
+        To avoid alpha & beta trade-off, solve the MIP model using a pure three-phase Lexicographic approach:
+        Phase 1: Minimize the number of operators used.
+        Phase 2: Minimize the makespan with fixed number of operators.
+        Phase 3: Minimize the sum of completion times (total flow) with fixed operators and fixed makespan.
+        '''
+        assert isinstance(self.model, ConcreteModel), "the model must be a ConcreteModel to use three_phase solving!"
+        
+        instance = self.model
+        if bin_packing_cut:
+            self.add_bin_packing_cut(self.model)
+            
+        solver = SolverFactory(solver_name)
+        
+        #phase 1: minimize operators
+        print("\n--- Starting Phase 1: Optimizing number of operators ---")
+        self.model.Objective.deactivate()
+        self.model.MinOperators = Objective(expr=sum(self.model.y[i] for i in self.model.I_max), sense=minimize)
+        
+        if time_limit_phase1 is not None:
+            solver.options['timelimit'] = time_limit_phase1 
+        if mip_gap_phase1 is not None:
+            solver.options['mipgap'] = mip_gap_phase1 
+            
+        results1 = solver.solve(self.model, tee=True)
+        
+        #reset solver options for next phases
+        if time_limit_phase1 is not None:
+            solver.options['timelimit'] = 0 
+        if mip_gap_phase1 is not None:
+            solver.options['mipgap'] = 0 
+            
+        if results1.solver.termination_condition != TerminationCondition.optimal:
+            print("Phase 1 failed to find optimal min operators!")
+            return instance, results1
+            
+        min_ops_count = sum(round(self.model.y[i].value) for i in self.model.I_max)
+        print(f"Phase 1 complete: Requires {min_ops_count} operators.")
+        
+        #fix operators for phase 2 and 3
+        for i in self.model.I_max:
+            self.model.y[i].fix(round(self.model.y[i].value))
+            
+        #phase 2: minimize makespan
+        print("\n--- Starting Phase 2: Optimizing makespan ---")
+        self.model.MinOperators.deactivate()
+        
+        #1 min buffer slack for capacity constraints (to avoid infeasibility) 
+        if relax_second_phase:
+            self.model.Slack = Var(self.model.I_max, bounds=(0, 1)) 
+            def relaxed_capacity_check(model, i):
+                return model.C_last[i] <= model.H_fixed * model.y[i] + model.Slack[i]
+            
+            self.model.CapacityCheck.deactivate()
+            self.model.RelaxedCapacityCheck = Constraint(self.model.I_max, rule=relaxed_capacity_check)
+            
+            #penalize overtime lightly so it doesn't use slack unless absolutely necessary
+            self.model.MinMakespan = Objective(expr=self.model.Z + 10*sum(self.model.Slack[i] for i in self.model.I_max), sense=minimize)
+        else:
+            self.model.MinMakespan = Objective(expr=self.model.Z, sense=minimize)
+            
+        if time_limit_phase2 is not None:
+            solver.options['timelimit'] = time_limit_phase2 
+        if mip_gap_phase2 is not None:
+            solver.options['mipgap'] = mip_gap_phase2
+            
+        results2 = solver.solve(self.model, tee=True)
+        
+        #reset solver options
+        if time_limit_phase2 is not None:
+            solver.options['timelimit'] = 0 
+        if mip_gap_phase2 is not None:
+            solver.options['mipgap'] = 0 
+            
+        if results2.solver.termination_condition != TerminationCondition.optimal:
+            print("WARNING: Phase 2 (scheduling) suboptimal.")
+            
+        best_makespan = self.model.Z.value
+        print(f"Phase 2 complete: Min makespan is {best_makespan:.2f} min.")
+        
+        #phase 3: minimize total flow time (sum of completion times) with fixed operators and fixed makespan
+        #used for load balancing and reducing overtime, 
+        #but it can be relaxed with a heavy penalty to allow some increase in makespan if it significantly reduces flow time (which is more costly in practice).
+        print("\n--- Starting Phase 3: optimizing total flow (routing/slack) ---")
+        self.model.MinMakespan.deactivate()
+        
+        #lock the makespan by adding a tiny tolerance (1e-4) to prevent CPLEX 
+        #floating point precision errors from triggering infeasibility.
+        self.model.MakespanLock = Constraint(expr=self.model.Z <= best_makespan + 1e-4)
+        
+        #objective: minimize the sum of completion times
+        #include heavy slack penalty so it doesn't artificially increase overtime to "save" flow time
+        if relax_second_phase:
+            self.model.MinTotalFlow = Objective(
+                expr=sum(self.model.C[j] for j in self.model.J) + 1000*sum(self.model.Slack[i] for i in self.model.I_max), 
+                sense=minimize
+            )
+        else:
+            self.model.MinTotalFlow = Objective(
+                expr=sum(self.model.C[j] for j in self.model.J), 
+                sense=minimize
+            )
+            
+        if time_limit_phase3 is not None:
+            solver.options['timelimit'] = time_limit_phase3 
+        if mip_gap_phase3 is not None:
+            solver.options['mipgap'] = mip_gap_phase3
+            
+        results3 = solver.solve(self.model, tee=True)
+        
+        if results3.solver.termination_condition != TerminationCondition.optimal:
+            print("Phase 3 suboptimal.")
+            
+        print("\n=== Final Schedule (3-Phase Lexicographic) ===")
+        print(f"Operators Used: {min_ops_count}")
+        print(f"Makespan (Z): {self.model.Z.value:.2f} min")
+        print(f"Total Flow: {sum(self.model.C[j].value for j in self.model.J):.2f} min")
+        
+        return instance, results3
     
     def display_solution(self, instance=None):
         '''
