@@ -3,6 +3,9 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import importlib
 import random
+import os
+import logging
+import time
 from collections import defaultdict
 from pyomo.environ import *
 from ParameterDataLoader import ParameterDataLoader
@@ -14,6 +17,9 @@ ALPHA = 1.0 #makespan weight
 BETA = 1000.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
 
+#if we want to prioritize makespan minimization, beta should be greater than the maximum possible makespan (ex. H_fixed_minutes).
+#BETA = BIG_M #for aboslute operator minimization count over makespan minimization. (unpreferred for ceplex solver due to numerical issues)
+
 LARGE_SCALE_BATCH_NAME = "Batch10000M"
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
@@ -23,6 +29,14 @@ FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 BATCH_NAME = MISSION_BATCH_DIR.replace(f'./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch', '').replace('_distanced.csv', '')
 BASE_MISSION = [0, 0, 0, 0, 0, 0, 0, 0, 0]  #virtual base mission for operators to start and end their routes
+
+os.makedirs(os.path.dirname('logs/'), exist_ok=True)
+logging.basicConfig(
+    filename=f'logs/mini_batch_schedule_generator_{int(time.time())}.log', 
+    filemode='w',
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 class MiniBatchScheduleGenerator:
     '''
@@ -332,11 +346,15 @@ class MiniBatchScheduleGenerator:
                                  BIG_M
                                 )
             
-            instance, results = mcmModel.solve(solver_name="cplex_direct")
-            
+            #instance, results = mcmModel.solve(solver_name="cplex_direct")
+            instance, results, is_optimal = mcmModel.solve_hybrid_two_phase(solver_name="cplex_direct")
+
             batch_name = f"{BATCH_NAME}_{mini_batch_number}"
             self.save_schedule(instance, batch_name, h_fixed)
             self.save_schedule_steps(instance, batch_name, h_fixed)
+
+            logging.info(f"Warning: Suboptimal or infeasible solution for mini-batch {mini_batch_number}. (Check time limits or numerical tolerances)") if not is_optimal \
+                         else logging.info(f"Optimal solution found for mini-batch {mini_batch_number}.")
 
 if __name__ == "__main__":
     miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=800, use_h_fixed=False)
