@@ -16,6 +16,7 @@ H_FIXED_MINUTES = 480 #480 for base shift
 ALPHA = 1.0 #makespan weight
 BETA = 1000.0 #operator activation weight (ex. 1000 = fully oriented to operator activation, 50 = balanced)
 BIG_M = 1e5
+MIP_SOLVER_TIME_LIMIT_SECONDS = 300 #5 minutes per mini-batch (can be adjusted based on computational resources and desired solution quality)
 
 #if we want to prioritize makespan minimization, beta should be greater than the maximum possible makespan (ex. H_fixed_minutes).
 #BETA = BIG_M #for aboslute operator minimization count over makespan minimization. (unpreferred for ceplex solver due to numerical issues)
@@ -347,14 +348,20 @@ class MiniBatchScheduleGenerator:
                                 )
             
             #instance, results = mcmModel.solve(solver_name="cplex_direct")
-            instance, results, is_optimal = mcmModel.solve_hybrid_two_phase(solver_name="cplex_direct")
+            instance, results, is_optimal = mcmModel.solve_hybrid_two_phase(time_limit_phase1=MIP_SOLVER_TIME_LIMIT_SECONDS,
+                                                                            time_limit_phase2=MIP_SOLVER_TIME_LIMIT_SECONDS,
+                                                                            solver_name="cplex_direct")
+            logging.info(f"Warning: Suboptimal or infeasible solution for mini-batch ({mini_batch_number}). (Check time limits or numerical tolerances)") if not is_optimal \
+                else logging.info(f"Optimal solution found for mini-batch ({mini_batch_number}).")
+            
+            if is_optimal:
+                batch_name = f"{BATCH_NAME}_{mini_batch_number}"
+                self.save_schedule(instance, batch_name, h_fixed)
+                self.save_schedule_steps(instance, batch_name, h_fixed)
 
-            batch_name = f"{BATCH_NAME}_{mini_batch_number}"
-            self.save_schedule(instance, batch_name, h_fixed)
-            self.save_schedule_steps(instance, batch_name, h_fixed)
-
-            logging.info(f"Warning: Suboptimal or infeasible solution for mini-batch {mini_batch_number}. (Check time limits or numerical tolerances)") if not is_optimal \
-                         else logging.info(f"Optimal solution found for mini-batch {mini_batch_number}.")
+                logging.info(f"Successfully generated and saved schedule for mini-batch ({mini_batch_number}).")
+            else:
+                logging.warning(f"Skipping schedule saving for mini-batch ({mini_batch_number}) due to suboptimal or infeasible solution.")
 
 if __name__ == "__main__":
-    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=800, use_h_fixed=False)
+    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=800, start_n=570, use_h_fixed=False)

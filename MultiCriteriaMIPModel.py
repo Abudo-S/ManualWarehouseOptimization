@@ -397,7 +397,7 @@ class MultiCriteriaMIPModel:
         model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
 
         #resource capacity and makespan constraints
-        model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule)
+        model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule) #would it be hard to be interpreted in GNN decoder?
         model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
         #model.CompletionCapacityCheck = Constraint(model.J, rule=completion_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
         model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
