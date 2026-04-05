@@ -297,7 +297,7 @@ class ScheduleEvaluator:
         seq_pos_weight = num_seq_neg / num_seq_pos
 
         #apply the weight to the positive sequence labels
-        seq_weight_vector = torch.where(true_seq == 1, seq_pos_weight, 1.0)
+        seq_weight_vector = torch.where(true_seq == 1, 2.0, 1.0)
 
         #calculate weighted BCE for the sequence head
         loss_seq = F.binary_cross_entropy(pred_seq, true_seq, weight=seq_weight_vector)
