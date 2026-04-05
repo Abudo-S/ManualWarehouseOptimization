@@ -68,9 +68,27 @@ class MultiCriteriaRecGNNModel(torch.nn.Module):
         self.convs = torch.nn.ModuleList()
         for _ in range(num_layers):
             conv_dict = {
-                ('order', 'to', 'order'): GATv2Conv(hidden_dim, hidden_dim // heads, heads=heads, edge_dim=1, add_self_loops=False, dropout=dropout), 
-                ('operator', 'assign', 'order'): GATv2Conv((-1, -1), hidden_dim // heads, heads=heads, edge_dim=2, add_self_loops=False, dropout=dropout),
-                ('order', 'rev_assign', 'operator'): GATv2Conv((-1, -1), hidden_dim // heads, heads=heads, edge_dim=2, add_self_loops=False, dropout=dropout)
+                #set dropout=0.0 for sequence message passing to not drop spatial routing connections.
+                #otherwise, the model will not learn to distinguish between "active" and "inactive" operators, 
+                #and the sequence head will struggle to learn meaningful order sequences.
+                ('order', 'to', 'order'): GATv2Conv(hidden_dim,
+                                                     hidden_dim // heads, 
+                                                     heads=heads, 
+                                                     edge_dim=1, 
+                                                     add_self_loops=False,
+                                                     dropout=0.0), 
+                ('operator', 'assign', 'order'): GATv2Conv((-1, -1), 
+                                                           hidden_dim // heads, 
+                                                           heads=heads, 
+                                                           edge_dim=2, 
+                                                           add_self_loops=False, 
+                                                           dropout=dropout),
+                ('order', 'rev_assign', 'operator'): GATv2Conv((-1, -1), 
+                                                               hidden_dim // heads, 
+                                                               heads=heads, 
+                                                               edge_dim=2, 
+                                                               add_self_loops=False, 
+                                                               dropout=dropout)
             }
             self.convs.append(HeteroConv(conv_dict, aggr='mean'))
             
