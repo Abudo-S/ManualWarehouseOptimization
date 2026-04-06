@@ -350,6 +350,7 @@ class MiniBatchScheduleGenerator:
             #instance, results = mcmModel.solve(solver_name="cplex_direct")
             instance, results, is_optimal = mcmModel.solve_hybrid_two_phase(time_limit_phase1=MIP_SOLVER_TIME_LIMIT_SECONDS,
                                                                             time_limit_phase2=MIP_SOLVER_TIME_LIMIT_SECONDS,
+                                                                            bin_packing_cut=False,
                                                                             solver_name="cplex_direct")
             logging.info(f"Warning: Suboptimal or infeasible solution for mini-batch ({mini_batch_number}). (Check time limits or numerical tolerances)") if not is_optimal \
                 else logging.info(f"Optimal solution found for mini-batch ({mini_batch_number}).")
@@ -364,4 +365,4 @@ class MiniBatchScheduleGenerator:
                 logging.warning(f"Skipping schedule saving for mini-batch ({mini_batch_number}) due to suboptimal or infeasible solution.")
 
 if __name__ == "__main__":
-    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=800, start_n=570, use_h_fixed=False)
+    miniBatchScheduleGenerator = MiniBatchScheduleGenerator(n_mini_batches=800, use_h_fixed=False)

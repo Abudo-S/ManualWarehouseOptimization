@@ -350,7 +350,9 @@ class MultiCriteriaMIPModel:
             '''
             Capacity check: ensure that the total time (based on completion time) for each operator i does not exceed fixed shift capacity if activated.
             '''
-            return model.C[j] <= model.H_fixed
+            #allow a tiny 0.5 minute floating-point tolerance
+            #so the solver doesn't panic over accumulated micro-fractions.
+            return model.C[j] <= model.H_fixed + 0.5 
 
         def makespan_rule(model, i):
             '''
@@ -397,11 +399,11 @@ class MultiCriteriaMIPModel:
         model.MTZBaseStart = Constraint(model.I_max, model.J, rule=mtz_base_start_rule)
 
         #resource capacity and makespan constraints
-        model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule) #would it be hard to be interpreted in GNN decoder?
-        model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
-        #model.CompletionCapacityCheck = Constraint(model.J, rule=completion_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
-        model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
-        #model.MakespanDefinition = Constraint(model.J, rule=makespan_rule_no_return) #substitutes MakespanDefinition but ignores return to base time
+        #model.CLastDefinition = Constraint(model.I_max, model.J, rule=c_last_rule) #would it be hard to be interpreted in GNN decoder?
+        #model.CapacityCheck = Constraint(model.I_max, rule=capacity_check_rule)
+        model.CompletionCapacityCheck = Constraint(model.J, rule=completion_capacity_check_rule) #substitutes CapacityCheck & CLastDefinition but ignores return to base time
+        #model.MakespanDefinition = Constraint(model.I_max, rule=makespan_rule)
+        model.MakespanDefinition = Constraint(model.J, rule=makespan_rule_no_return) #substitutes MakespanDefinition but ignores return to base time
 
         self.model = model
         TransformationFactory('gdp.bigm').apply_to(self.model) #apply the big-M reformulation for disjunctions
