@@ -84,6 +84,7 @@ class GnnDataInstanceBuilder:
         df_missions = df_missions.merge(df_pallet_types[['TP_UDC', 'WIDTH', 'LENGTH']], on='TP_UDC', how='left')
         
         #node idx mappings
+        df_missions = df_missions.dropna(subset=['CD_MISSION']) #drop missions with missing cd_mission (if any) to avoid issues in mapping and edge creation
         mission_ids = df_missions['CD_MISSION'].astype(str).str.replace(",", "", regex=False).astype(int).unique()
         order_map = {id: i for i, id in enumerate(mission_ids)}
         num_mission = len(mission_ids)
