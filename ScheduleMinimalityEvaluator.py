@@ -155,6 +155,7 @@ class ScheduleMinimalityEvaluator:
             df_unscaled_features = mission_batch_df.drop(columns=features_to_scale)
 
             mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
+            mission_batch_df_scaled = mission_batch_df_scaled.dropna(subset=['CD_MISSION']) #drop missions with missing cd_mission (if any) to avoid issues in mapping and edge creation
             mission_batch_df_scaled['CD_MISSION'] = mission_batch_df_scaled['CD_MISSION'].astype(str).str.replace(',', '', regex=False).astype(int)
             BASE_MISSION = [0 for _ in range(len(mission_batch_df_scaled.columns))]
             df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
@@ -338,6 +339,7 @@ class ScheduleMinimalityEvaluator:
             df_unscaled_features = mission_batch_df.drop(columns=features_to_scale)
 
             mission_batch_df_scaled = pd.concat([df_unscaled_features, df_scaled_features], axis=1)
+            mission_batch_df_scaled = mission_batch_df_scaled.dropna(subset=['CD_MISSION']) #drop missions with missing cd_mission (if any) to avoid issues in mapping and edge creation
             mission_batch_df_scaled['CD_MISSION'] = mission_batch_df_scaled['CD_MISSION'].astype(str).str.replace(',', '', regex=False).astype(int)
             BASE_MISSION = [0 for _ in range(len(mission_batch_df_scaled.columns))]
             df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
