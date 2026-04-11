@@ -1828,11 +1828,13 @@ class ScheduleDecoder:
 
 
     @torch.no_grad()
-    def export_schedule_with_timings_v3_hungarian_seq_refined(self, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
+    def export_schedule_with_timings_v3_hungarian_seq_refined(self, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0, use_min_activation=True):
         """
         Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
         Uses the Hungarian Algorithm (linear_sum_assignment) for global fairness distribution.
         Includes a completely non-destructive Makespan Minimization Refinement pass.
+        use_min_activation: if True, ensures at least the theoretical minimum number of operators are activated based on average processing and travel times (can adjust with n_extra_ops_to_use).
+        Otherwise, relies solely on threshold-based activation with optional extra ops for flexibility.
         """
         # if '800' in filename:
         #     use_extra_ops = True
@@ -1848,6 +1850,49 @@ class ScheduleDecoder:
         h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
         num_orders = batch['order'].num_nodes
         num_ops = batch['operator'].num_nodes
+        
+        #build processing / travel maps for real timing checks
+        assign_edge_index_cpu = batch['operator', 'assign', 'order'].edge_index.cpu().numpy()
+        assign_attr_cpu = batch['operator', 'assign', 'order'].edge_attr.cpu().numpy()
+
+        proc_time_map = {}
+        base_travel_map = {}
+        for i in range(assign_edge_index_cpu.shape[1]):
+            op = int(assign_edge_index_cpu[0, i])
+            order = int(assign_edge_index_cpu[1, i])
+
+            val_proc = float(assign_attr_cpu[i, 0]) if assign_attr_cpu.ndim > 1 else float(assign_attr_cpu[i])
+            val_travel = float(assign_attr_cpu[i, 1]) if (assign_attr_cpu.ndim > 1 and assign_attr_cpu.shape[1] > 1) else 0.0
+
+            proc_time_map[(op, order)] = val_proc * global_time_scale
+            base_travel_map[(op, order)] = val_travel * global_time_scale
+        
+        seq_edge_index_cpu = batch['order', 'to', 'order'].edge_index.cpu().numpy()
+        seq_attr_cpu = batch['order', 'to', 'order'].edge_attr.cpu().numpy()
+
+        travel_time_map = {}
+        for i in range(seq_edge_index_cpu.shape[1]):
+            u = int(seq_edge_index_cpu[0, i])
+            v = int(seq_edge_index_cpu[1, i])
+            val = float(seq_attr_cpu[i, 0]) if seq_attr_cpu.ndim > 1 else float(seq_attr_cpu[i])
+            travel_time_map[(u, v)] = val * global_time_scale
+
+        valid_travel_times = [v for v in travel_time_map.values() if not math.isnan(v)]
+        if not valid_travel_times:
+            avg_travel_time = 1.0
+        else:
+            avg_travel_time = sum(valid_travel_times) / len(valid_travel_times)
+        if avg_travel_time <= 0:
+            avg_travel_time = 1.0
+
+        #activation first: determine strict minimum pool size
+        #calculate theoretical minimum ops needed based on average processing and travel times
+        total_proc_time = 0.0
+        for o in range(num_orders):
+            total_proc_time += np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
+        total_travel_time = num_orders * avg_travel_time
+
+        theoretical_min_ops = math.ceil((total_proc_time + total_travel_time) / max(h_fixed_mins, 1e-6))
 
         #prepare probs of each head
         p_act = out['activation'].view(-1).cpu().numpy()
@@ -1908,23 +1953,30 @@ class ScheduleDecoder:
         all_mission_ids = batch['order'].global_id.cpu().tolist()
         all_operator_ids = batch['operator'].global_id.cpu().tolist()
 
-        #activation
-        active_ops = set(np.where(p_act >= self.act_threshold)[0])
+        if use_min_activation: #ensure we activate at least the theoretical minimum number of operators needed to feasibly schedule all orders within the horizon (based on average times)
+            k_target = max(1, theoretical_min_ops) + n_extra_ops_to_use
+            k_target = min(num_ops, k_target)
 
-        if use_extra_ops:
-            inactive_ops = [op for op in range(num_ops) if op not in active_ops]
-            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
-            for best_inactive_op in best_inactive_ops:
-                active_ops.add(best_inactive_op)
+            active_ops_list = np.argsort(p_act)[-k_target:].tolist()
+            active_ops = set(active_ops_list)
+        else: #threshold-based activation
+            active_ops = set(np.where(p_act >= self.act_threshold)[0])
 
-        if not active_ops:
-            k = max(1, int(num_ops * 0.3))
-            active_ops = set(np.argsort(p_act)[-k:].tolist())
+            if use_extra_ops:
+                inactive_ops = [op for op in range(num_ops) if op not in active_ops]
+                best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
+                for best_inactive_op in best_inactive_ops:
+                    active_ops.add(best_inactive_op)
+
+            if not active_ops:
+                k = max(1, int(num_ops * 0.3))
+                active_ops = set(np.argsort(p_act)[-k:].tolist())
 
         #STR- hungarian global assignment
         num_active = max(1, len(active_ops))
+        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 1.0)) #strict load balancing (can adjust margin as needed)
         #max_capacity_per_op = int(math.ceil((num_orders / num_active) * 1.5))
-        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 3.0))
+        #max_capacity_per_op = int(math.ceil((num_orders / num_active) * 3.0))
 
         active_ops_list = list(active_ops)
         total_slots = len(active_ops_list) * max_capacity_per_op
@@ -2312,7 +2364,7 @@ class ScheduleDecoder:
             logging.info(f"Schedule exported with name: {filename}")
 
     @torch.no_grad()
-    def export_schedule_with_timings_v3_refined(self, model, batch, out, filename='schedule.json', use_extra_ops=False, n_extra_ops_to_use=0):
+    def export_schedule_with_timings_v3_tail_iter_refined(self, model, batch, out, filename='schedule.json', use_extra_ops=False, n_extra_ops_to_use=0):
         """
             Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
             Activation: select active operators based on model probabilities.
@@ -2711,7 +2763,7 @@ class ScheduleDecoder:
                 n_extra_ops_to_use = n_extra_ops_to_use + 1
                 print(f'Trying to resolve by activating extra {n_extra_ops_to_use} operators.')
                 logging.info(f'Trying to resolve by activating extra {n_extra_ops_to_use} operators.')
-                self.export_schedule_with_timings_v3_refined(model=model, batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
+                self.export_schedule_with_timings_v3_tail_iter_refined(model=model, batch=batch, out=out, filename=filename, use_extra_ops=True, n_extra_ops_to_use=n_extra_ops_to_use)
         else:
             unassigned_orders = num_orders - assigned_count
             schedule_data['metadata']['unassigned_orders'] = unassigned_orders
@@ -3316,7 +3368,7 @@ class ScheduleDecoder:
         all_operator_ids = batch['operator'].global_id.cpu().tolist()
         device = batch['order'].x.device
         
-        # Build processing and travel maps for accurate timing calculation
+        #build processing and travel maps for accurate timing calculation
         assign_idx = batch['operator', 'assign', 'order'].edge_index.cpu().numpy()
         assign_attr = batch['operator', 'assign', 'order'].edge_attr.cpu().numpy()
         
@@ -3346,17 +3398,17 @@ class ScheduleDecoder:
             if avg_travel_time <= 0:
                 avg_travel_time = 1.0
             
-        # 1. Initialize State Variables & Dynamic Features
+        #initialize state variables & dynamic Features
         batch_dict_arg = {
             'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch') else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=device),
             'order': batch['order'].batch if hasattr(batch['order'], 'batch') else torch.zeros(batch['order'].x.size(0), dtype=torch.long, device=device)
         }
 
-        # Initialize Order Dynamic Features: [is_assigned] (Becomes Index 10)
+        #initialize order dynamic features: [is_assigned] (idx 10)
         order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=device)
         new_order_x = torch.cat([batch['order'].x, order_dynamic], dim=1)
 
-        # Initialize Operator Dynamic Features: [remaining_h_fixed, current_X, current_Y] (Becomes Indices 15,16,17)
+        #initialize Operator Dynamic Features: [remaining_h_fixed, current_X, current_Y] (idx 15,16,17)
         op_batch = batch_dict_arg['operator']
         h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1) 
         op_xy_initial = torch.zeros((num_ops, 2), dtype=torch.float, device=device)
@@ -3369,12 +3421,12 @@ class ScheduleDecoder:
             'operator': new_op_x.clone()
         }
 
-        # Initialize recurrent states
+        #initialize recurrent states
         static_embs = None
         op_hidden = None
         last_order_emb = None
         
-        # Route tracking
+        #route tracking
         final_op_routes = {op: [] for op in range(num_ops)}
         current_times = {op: 0.0 for op in range(num_ops)}
         unassigned_orders = set(range(num_orders))
@@ -3384,8 +3436,8 @@ class ScheduleDecoder:
         
         model.eval()
         
-        # --- ACTIVATION FIRST: Determine strict minimum pool size ---
-        # Calculate theoretical minimum ops needed based on average processing and travel times
+        #activation-first: choose the smallest operator pool K, then rank by act head.
+        #calculate theoretical minimum ops needed based on average processing and travel times
         total_proc_time = 0.0
         for o in range(num_orders):
             total_proc_time += np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
@@ -3396,24 +3448,24 @@ class ScheduleDecoder:
             _, initial_preds, _ = model(x_dict_raw, batch.edge_index_dict, batch.edge_attr_dict, batch.u, batch_dict_arg)
             act_probs = initial_preds['activation'].view(-1)
             
-        # By setting the target pool size to the physical minimum, we FORCE the model 
-        # to optimize activation first. It literally cannot use more operators than k_target.
+        #by setting the target pool size to the physical minimum, we force the model 
+        #to optimize activation first. It literally cannot use more operators than k_target.
         k_target = max(1, theoretical_min_ops) + n_extra_ops_to_use
         k_target = min(num_ops, k_target)
         
-        # We use the GNN's activation head strictly to rank WHICH operators to use.
+        #use the GNN's activation head strictly to rank which operators to use.
         active_ops_list = np.argsort(act_probs.cpu().numpy())[-k_target:].tolist()
         active_ops = set(active_ops_list)
         active_op_tensor = torch.tensor(list(active_ops), device=device)
         k_current = len(active_ops)
 
-        # 2. Sequential Decoding Loop
+        #sequential decoding loop
         while unassigned_orders and iteration < max_iterations:
             print(f"Iteration: {iteration} - Unassigned Orders: {len(unassigned_orders)}, Active Ops: {k_current}")
             logging.info(f"Iteration: {iteration} - Unassigned Orders: {len(unassigned_orders)}, Active Ops: {k_current}")
             iteration += 1
             
-            # Forward Pass (ONE Step)
+            #forward pass
             new_op_hidden, preds, static_embs = model(
                 x_dict_raw=x_dict_raw,
                 edge_index_dict=batch.edge_index_dict,
@@ -3439,7 +3491,7 @@ class ScheduleDecoder:
             src_idx = assign_edge_index[0]
             dst_idx = assign_edge_index[1]
             
-            # Hard constraints (Mask invalid edges)
+            #hard constraints (mask invalid edges)
             valid_order_mask = (is_assigned_flag[dst_idx] < 0.5)
             valid_op_mask = (remaining_h[src_idx] > 0.0)
             valid_time_mask = torch.zeros_like(valid_order_mask)
@@ -3473,32 +3525,32 @@ class ScheduleDecoder:
             masked_probs = assign_probs.clone()
             masked_probs[~combined_mask] = -10000.0 
             
-            # --- STRICT POOL MASKING WITH LOAD BALANCING (MAKESPAN SECOND) ---
+            #strict pool masking with load balancing
             is_allowed_active = torch.isin(src_idx, active_op_tensor)
             
-            # Because the pool size is already completely locked to k_current (Activation First),
-            # we can safely distribute the load evenly among them without inflating activation!
+            #because the pool size is already completely locked to k_current (activation first),
+            #we can safely distribute the load evenly among them without inflating activation!
             current_load = h_fixed_mins - remaining_h[src_idx]
             load_ratio = current_load / (h_fixed_mins + 1e-6)  
             
             if n_extra_ops_to_use < 2:
-                # Primary Strategy: Perfect Load Balancing for optimal Makespan
+                #primary Strategy: Perfect Load Balancing for optimal Makespan
                 balanced_probs = masked_probs - (load_ratio * 1.5)
             else:
-                # Fallback Strategy: If perfect balancing causes fragmentation that 
-                # exhausts capacity multiple times, we shift to Bin-Packing to force a fit.
+                #fallback Strategy: if perfect balancing causes fragmentation that 
+                #exhausts capacity multiple times, we shift to bin-packing to force a fit.
                 balanced_probs = masked_probs + (load_ratio * (0.5 * n_extra_ops_to_use))
 
             tier_1_mask = combined_mask & is_allowed_active
             
             if tier_1_mask.any():
-                # We force the assignment to happen ONLY within the predicted allowed operators
+                #force the assignment to happen only within the predicted allowed operators
                 tier_1_probs = balanced_probs.clone()
                 tier_1_probs[~tier_1_mask] = -20000.0
                 best_edge_idx = torch.argmax(tier_1_probs).item()
             else:
-                # The strictly bounded operators CANNOT fit the remaining orders physically.
-                # We immediately break to trigger the recursive retry with K+1.
+                #the strictly bounded operators can't fit the remaining orders physically.
+                #we immediately break to trigger the recursive retry with k+1.
                 print(f"Strict allowed set of {k_current} predicted operators exhausted. Breaking to trigger retry.")
                 logging.info(f"Strict allowed set of {k_current} predicted operators exhausted. Breaking to trigger retry.")
                 break
@@ -3506,7 +3558,7 @@ class ScheduleDecoder:
             best_op = int(src_idx[best_edge_idx])
             best_order = int(dst_idx[best_edge_idx])
             
-            # Add to schedule
+            #add to schedule
             route = final_op_routes[best_op]
             last_node = route[-1]['internal'] if route else None
             
@@ -3537,7 +3589,7 @@ class ScheduleDecoder:
             current_times[best_op] = finish_time
             unassigned_orders.remove(best_order)
             
-            # 3. Dynamic State Update for Next Step
+            #dynamic state update for next step
             next_order_x = x_dict_raw['order'].clone()
             next_op_x = x_dict_raw['operator'].clone()
             next_order_x[best_order, 10] = 1.0 
@@ -3560,7 +3612,7 @@ class ScheduleDecoder:
             next_op_hidden[best_op] = new_op_hidden[best_op]
             op_hidden = next_op_hidden
 
-        # 4. Reconstruct Output Schedule & Handle Recursion
+        #reconstruct output schedule & handle recursion
         assigned_count = sum(len(route) for route in final_op_routes.values())
         
         schedule_data = {
@@ -3582,13 +3634,13 @@ class ScheduleDecoder:
                     "routes": [clean_route]
                 })
 
-        # --- RECURSIVE RETRY LOGIC ---
+        #recursive retry with extra operators if we failed to assign all orders with the strictly activated pool
         if assigned_count < num_orders and k_current < num_ops:
             n_extra_ops_to_use += 1
             print(f"Warning: Orders unassigned with {k_current} predicted ops. Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
             logging.info(f"Warning: Orders unassigned with {k_current} predicted ops. Trying to resolve by activating extra {n_extra_ops_to_use} operators.")
 
-            # Discard this attempt and retry completely from Step 0 with K+1 operators allowed
+            #discard this attempt and retry completely from Step 0 with k+1 operators allowed
             return self.export_schedule_with_timings_recurrent(
                 model=model,
                 batch=batch,
@@ -3598,7 +3650,7 @@ class ScheduleDecoder:
             )
             
         elif assigned_count < num_orders:
-            # We used ALL available operators and still failed (mathematically impossible instance)
+            #we used all available operators and still failed (mathematically impossible instance)
             schedule_data['metadata']['unassigned_orders'] = num_orders - assigned_count
             print(colored_background_str(r=255, g=0, b=5, text=f"Warning: {unassigned_orders} orders remain definitely unassigned."))
             
@@ -4263,8 +4315,8 @@ def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
         #scheduleValidator.export_schedule_with_timings_v2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_hungarian(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        #scheduleDecoder.export_schedule_with_timings_v3_hungarian_seq_refined(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        scheduleDecoder.export_schedule_with_timings_v3_hungarian_tail_repredicted(model, batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        scheduleDecoder.export_schedule_with_timings_v3_hungarian_seq_refined(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        #scheduleDecoder.export_schedule_with_timings_v3_hungarian_tail_repredicted(model, batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_refined(model, batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
 
         # print(report)
@@ -4320,7 +4372,7 @@ def decode_autoregressive(model, loader, scheduleDecoder, isRecurrent=True, devi
     logging.info(f"Execution times: {all_executon_times}")
 
 if __name__ == "__main__":
-    use_large_scale = True
+    use_large_scale = False
     use_autoregressive_decoding = True
 
     if use_large_scale:
@@ -4358,7 +4410,7 @@ if __name__ == "__main__":
         'lr_assignment': 0.0005,
         'lr_sequence': 0.001
     }
-    
+
     # #tuned thresholds for feasibility validation (B100)
     # best_thresholds =  {
     #     'activation': 0.2137,
@@ -4532,6 +4584,24 @@ if __name__ == "__main__":
     }
 
     if use_autoregressive_decoding:
+        best_conf = {
+            'batch_size': 32,
+            'hidden_dim': 64,
+            'heads': 4,
+            'dropout': 0.15,
+            'lr_trunk': 0.0005,
+            'lr_assignment': 0.0001,
+            'lr_activation': 0.0001,
+            'lr_sequence': 0.0002,
+            'weight_decay': 1e-4
+        }
+
+        best_thresholds = {
+        'activation': 0.4398,
+        'assignment': 0.0741,
+        'sequence': 0.4500
+        }
+    
         # model = MultiCriteriaGNNModel_AutoRegressive(
         #     hidden_dim=best_conf.get('hidden_dim', 64),
         #     heads=best_conf.get('heads', 4),
@@ -4544,6 +4614,21 @@ if __name__ == "__main__":
             dropout=best_conf.get('dropout', 0.2)
         ).to(device)
     else:
+        best_conf = {
+            'batch_size': 32,
+            'hidden_dim': 128,
+            'heads': 4,
+            'dropout': 0.0,
+            'lr_trunk': 0.001,
+            'lr_activation': 0.01,
+            'lr_assignment': 0.0005,
+            'lr_sequence': 0.001
+        }
+        best_thresholds =  {
+            'activation': 0.4048,
+            'assignment': 0.0039,
+            'sequence': 0.0942
+        }
         model = MultiCriteriaGNNModel(
             metadata=sample_data.metadata(),
             hidden_dim=best_conf['hidden_dim'],
