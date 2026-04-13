@@ -268,6 +268,54 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
 
+    def evaluate_coefficient_variation_optimality(self):
+        """
+        Evaluates cv optimality gap for each predicted batch schedule compared to its corresponding optimal schedule, across different alpha, beta, h_fixed values.
+        """
+
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            opt_path = item['optimal_schedule_path']
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+
+            #take the finish times of all routes in all operators
+            pred_finish_times = [route[-1]["finish_time"]
+                                    for op in pred["operators"] 
+                                    for route in op["routes"]]
+
+            pred_coefficient_variation = (pd.Series(pred_finish_times).std() / pd.Series(pred_finish_times).mean()).item() if len(pred_finish_times) > 1 else 0.0
+
+            df_opt = pd.read_csv(opt_path)
+            opt_finish_times = df_opt.groupby("Operator")["Finish"].max() #take the finish times of last missions for each operator
+            #coefficient of variation of finish times across operators in the optimal schedule
+            opt_coefficient_variation = (opt_finish_times.std()/opt_finish_times.mean()).item() if len(df_opt["Operator"].unique()) > 1 else 0.0 
+
+            # print(f"Evaluating {pred_path} against {opt_path} with alpha={alpha}, beta={beta}, H_fixed={h_fixed}")
+            # print(f"Predicted coefficient_variation: {pred_coefficient_variation}, Optimal coefficient_variation: {opt_coefficient_variation}")
+            # print(f"Relative Error for batch [{batch_num}]: {(pred_coefficient_variation - opt_coefficient_variation) / opt_coefficient_variation:.2%}\n")
+
+            optimality_gap = pred_coefficient_variation - opt_coefficient_variation
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_cv_score': pred_coefficient_variation,
+                'opt_cv_score': opt_coefficient_variation,
+                'optimality_gap': round(optimality_gap, 4) * 100 #convert to percentage
+            })
+            
+        return overall_results
+
 if __name__ == "__main__":
     evaluator = ScheduleOptimalityEvaluator(SCHEDULE_DIR, PREDICTED_SCHEDULE_DIR)
     makespan_results = evaluator.evaluate_makespan_optimality()
