@@ -3,7 +3,8 @@ import pandas as pd
 import os
 import glob
 import re
-import math;
+import math
+import numpy as np
 from collections import defaultdict
 from sklearn.preprocessing import StandardScaler
 from ParameterDataLoader import ParameterDataLoader
@@ -414,6 +415,50 @@ class ScheduleMinimalityEvaluator:
                 'combined_min_gap': round(combined_min_gap, 4) * 100 #convert to percentage
             })
             
+        return overall_results
+    
+    def evaluate_coefficient_of_variation_minimality(self):
+        """
+        Evaluates the minimality of each batch's predicted schedules in terms of 
+        workload balancing, using the Coefficient of Variation (CV).
+        The theoretical minimum CV is 0.0 (perfectly equal workloads).
+        Therefore, the absolute minimality gap is simply the predicted CV.
+        """
+
+        overall_results = []
+
+        for item in self.items:
+            batch_num = item['batch_num']
+            pred_path = item['predicted_schedule_path']
+            alpha = item['alpha']
+            beta = item['beta']
+            h_fixed = item['h_fixed']
+
+            with open(pred_path) as f:
+                pred = json.load(f)
+            
+            #take the finish times of all routes in all operators
+            pred_finish_times = [route[-1]["finish_time"]
+                                    for op in pred["operators"] 
+                                    for route in op["routes"]]
+
+            pred_coefficient_variation = (pd.Series(pred_finish_times).std() / pd.Series(pred_finish_times).mean()).item() if len(pred_finish_times) > 1 else 0.0
+
+            #the theoretical minimum cv is 0.0. 
+            #using absolute gap: pred_cv - 0.0 = pred_cv
+            min_cv = 0.0
+            minimality_gap = pred_coefficient_variation - min_cv 
+
+            overall_results.append({
+                'batch_num': batch_num,
+                'alpha': alpha,
+                'beta': beta,
+                'h_fixed': h_fixed,
+                'pred_cv': round(pred_coefficient_variation, 4),
+                'min_cv': min_cv,
+                'minimality_gap': round(minimality_gap, 4)
+            })
+
         return overall_results
 
 if __name__ == "__main__":
