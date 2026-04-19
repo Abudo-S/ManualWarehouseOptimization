@@ -1543,7 +1543,7 @@ class ScheduleDecoder:
 
 
     @torch.no_grad()
-    def export_schedule_with_timings_v3_hungarian(self, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0):
+    def export_schedule_with_timings_v3_hungarian(self, batch, out, filename="schedule.json", use_extra_ops=False, n_extra_ops_to_use=0, use_min_activation=True):
         """
         Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
         Uses the Hungarian Algorithm (linear_sum_assignment) for global fairness distribution 
@@ -1559,7 +1559,52 @@ class ScheduleDecoder:
 
         #batch.u shape is [1, 3]
         h_fixed_mins = float(batch.u[0, 2].item()) * global_time_scale
+        num_orders = batch['order'].num_nodes
+        num_ops = batch['operator'].num_nodes
 
+        #build processing / travel maps for real timing checks
+        assign_edge_index_cpu = batch['operator', 'assign', 'order'].edge_index.cpu().numpy()
+        assign_attr_cpu = batch['operator', 'assign', 'order'].edge_attr.cpu().numpy()
+
+        proc_time_map = {}
+        base_travel_map = {}
+        for i in range(assign_edge_index_cpu.shape[1]):
+            op = int(assign_edge_index_cpu[0, i])
+            order = int(assign_edge_index_cpu[1, i])
+
+            val_proc = float(assign_attr_cpu[i, 0]) if assign_attr_cpu.ndim > 1 else float(assign_attr_cpu[i])
+            val_travel = float(assign_attr_cpu[i, 1]) if (assign_attr_cpu.ndim > 1 and assign_attr_cpu.shape[1] > 1) else 0.0
+
+            proc_time_map[(op, order)] = val_proc * global_time_scale
+            base_travel_map[(op, order)] = val_travel * global_time_scale
+        
+        seq_edge_index_cpu = batch['order', 'to', 'order'].edge_index.cpu().numpy()
+        seq_attr_cpu = batch['order', 'to', 'order'].edge_attr.cpu().numpy()
+
+        travel_time_map = {}
+        for i in range(seq_edge_index_cpu.shape[1]):
+            u = int(seq_edge_index_cpu[0, i])
+            v = int(seq_edge_index_cpu[1, i])
+            val = float(seq_attr_cpu[i, 0]) if seq_attr_cpu.ndim > 1 else float(seq_attr_cpu[i])
+            travel_time_map[(u, v)] = val * global_time_scale
+
+        valid_travel_times = [v for v in travel_time_map.values() if not math.isnan(v)]
+        if not valid_travel_times:
+            avg_travel_time = 1.0
+        else:
+            avg_travel_time = sum(valid_travel_times) / len(valid_travel_times)
+        if avg_travel_time <= 0:
+            avg_travel_time = 1.0
+			
+        #activation first: determine strict minimum pool size
+        #calculate theoretical minimum ops needed based on average processing and travel times
+        total_proc_time = 0.0
+        for o in range(num_orders):
+            total_proc_time += np.mean([proc_time_map.get((op, o), 0.0) for op in range(num_ops)])
+        total_travel_time = num_orders * avg_travel_time
+
+        theoretical_min_ops = math.ceil((total_proc_time + total_travel_time) / max(h_fixed_mins, 1e-6))
+               
         #prepare probs of each head
         p_act = out['activation'].view(-1).cpu().numpy()
         p_assign = out['assignment'].view(-1).cpu().numpy()
@@ -1611,14 +1656,21 @@ class ScheduleDecoder:
         num_ops = batch['operator'].num_nodes
 
         #STR- activation
-        active_ops = set(np.where(p_act >= self.act_threshold)[0])
+        if use_min_activation: #ensure we activate at least the theoretical minimum number of operators needed to feasibly schedule all orders within the horizon (based on average times)
+            k_target = max(1, theoretical_min_ops) + n_extra_ops_to_use
+            k_target = min(num_ops, k_target)
 
-        if use_extra_ops:
-            inactive_ops = [op for op in range(num_ops) if op not in active_ops]
-            best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
-            
-            for best_inactive_op in best_inactive_ops:
-                active_ops.add(best_inactive_op)
+            active_ops_list = np.argsort(p_act)[-k_target:].tolist()
+            active_ops = set(active_ops_list)
+        else: #threshold-based activation
+            active_ops = set(np.where(p_act >= self.act_threshold)[0])
+
+            if use_extra_ops:
+                inactive_ops = [op for op in range(num_ops) if op not in active_ops]
+                best_inactive_ops = sorted(inactive_ops, key=lambda x: p_act[x], reverse=True)[:n_extra_ops_to_use]
+                
+                for best_inactive_op in best_inactive_ops:
+                    active_ops.add(best_inactive_op)
 
         if not active_ops:
             k = max(1, int(num_ops * 0.3))
@@ -1627,7 +1679,8 @@ class ScheduleDecoder:
         #STR- hungarian global assignment
         num_active = max(1, len(active_ops))
         #estimate max capacity: assume each operator can at most take (total_orders / active_ops) * margin
-        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 3.0))
+        max_capacity_per_op = int(math.ceil((num_orders / num_active) * 1.0)) #strict load balancing with no margin, since we have the sequence routing to handle time constraints.
+        #max_capacity_per_op = int(math.ceil((num_orders / num_active) * 3.0))
 
         active_ops_list = list(active_ops)
         total_slots = len(active_ops_list) * max_capacity_per_op
@@ -4365,8 +4418,8 @@ def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
         idx = idx + 1
         start_time = time.perf_counter() #start time
         #scheduleValidator.export_schedule_with_timings_v2(batch, report, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
-        #scheduleDecoder.export_schedule_with_timings_v3_hungarian(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        #scheduleDecoder.export_schedule_with_timings_v3(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
+        scheduleDecoder.export_schedule_with_timings_v3_hungarian(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_hungarian_seq_refined(batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_hungarian_tail_repredicted(model, batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
         #scheduleDecoder.export_schedule_with_timings_v3_refined(model, batch, out, filename=f"predicted_{batch.schedule_id[0]}.json")
@@ -4425,7 +4478,7 @@ def decode_autoregressive(model, loader, scheduleDecoder, isRecurrent=True, devi
 
 if __name__ == "__main__":
     use_large_scale = False
-    use_autoregressive_decoding = True
+    use_autoregressive_decoding = False
 
     if use_large_scale:
         #init large-scale dataset
