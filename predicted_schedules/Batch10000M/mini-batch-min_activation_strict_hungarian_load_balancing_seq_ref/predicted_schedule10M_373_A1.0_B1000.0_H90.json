@@ -1,0 +1,69 @@
+{
+    "metadata": {
+        "num_orders": 5,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": "schedule10M_373_A1.0_B1000.0_H90",
+        "unassigned_orders": 0,
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 3,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3877471,
+                        "start_time": 10.0,
+                        "finish_time": 20.41,
+                        "processing_duration": 10.41,
+                        "travel_duration": 10.0,
+                        "successor": 3878274
+                    },
+                    {
+                        "mission_id": 3878274,
+                        "start_time": 30.77,
+                        "finish_time": 41.19,
+                        "processing_duration": 10.41,
+                        "travel_duration": 10.36,
+                        "successor": 3883001
+                    },
+                    {
+                        "mission_id": 3883001,
+                        "start_time": 51.55,
+                        "finish_time": 62.0,
+                        "processing_duration": 10.45,
+                        "travel_duration": 10.36,
+                        "successor": null
+                    }
+                ]
+            ]
+        },
+        {
+            "operator_id": 2,
+            "assigned_orders_count": 2,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3884931,
+                        "start_time": 10.0,
+                        "finish_time": 20.51,
+                        "processing_duration": 10.51,
+                        "travel_duration": 10.0,
+                        "successor": 3883035
+                    },
+                    {
+                        "mission_id": 3883035,
+                        "start_time": 30.92,
+                        "finish_time": 41.37,
+                        "processing_duration": 10.45,
+                        "travel_duration": 10.41,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}

@@ -1,0 +1,61 @@
+{
+    "metadata": {
+        "num_orders": 5,
+        "num_operators": 10,
+        "valid": true,
+        "schedule_id": "schedule10M_556_A1.0_B1000.0_H480",
+        "unassigned_orders": 0,
+        "horizon_valid": true,
+        "horizon_violations": []
+    },
+    "operators": [
+        {
+            "operator_id": 1,
+            "assigned_orders_count": 5,
+            "routes": [
+                [
+                    {
+                        "mission_id": 3881607,
+                        "start_time": 10.0,
+                        "finish_time": 22.01,
+                        "processing_duration": 12.01,
+                        "travel_duration": 10.0,
+                        "successor": 3877470
+                    },
+                    {
+                        "mission_id": 3877470,
+                        "start_time": 33.45,
+                        "finish_time": 43.45,
+                        "processing_duration": 10.0,
+                        "travel_duration": 11.44,
+                        "successor": 3881587
+                    },
+                    {
+                        "mission_id": 3881587,
+                        "start_time": 54.89,
+                        "finish_time": 66.89,
+                        "processing_duration": 12.01,
+                        "travel_duration": 11.44,
+                        "successor": 3879789
+                    },
+                    {
+                        "mission_id": 3879789,
+                        "start_time": 78.27,
+                        "finish_time": 90.24,
+                        "processing_duration": 11.97,
+                        "travel_duration": 11.38,
+                        "successor": 3881650
+                    },
+                    {
+                        "mission_id": 3881650,
+                        "start_time": 101.61,
+                        "finish_time": 113.62,
+                        "processing_duration": 12.01,
+                        "travel_duration": 11.38,
+                        "successor": null
+                    }
+                ]
+            ]
+        }
+    ]
+}

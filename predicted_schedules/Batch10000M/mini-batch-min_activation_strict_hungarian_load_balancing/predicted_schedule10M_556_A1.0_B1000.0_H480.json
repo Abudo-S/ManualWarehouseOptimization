@@ -15,7 +15,7 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3881607,
+                        "mission_id": 3881587,
                         "start_time": 10.0,
                         "finish_time": 22.01,
                         "processing_duration": 12.01,
@@ -28,30 +28,30 @@
                         "finish_time": 43.45,
                         "processing_duration": 10.0,
                         "travel_duration": 11.44,
-                        "successor": 3881587
-                    },
-                    {
-                        "mission_id": 3881587,
-                        "start_time": 54.89,
-                        "finish_time": 66.89,
-                        "processing_duration": 12.01,
-                        "travel_duration": 11.44,
                         "successor": 3879789
                     },
                     {
                         "mission_id": 3879789,
-                        "start_time": 78.27,
-                        "finish_time": 90.24,
+                        "start_time": 54.89,
+                        "finish_time": 66.86,
                         "processing_duration": 11.97,
+                        "travel_duration": 11.44,
+                        "successor": 3881607
+                    },
+                    {
+                        "mission_id": 3881607,
+                        "start_time": 78.24,
+                        "finish_time": 90.24,
+                        "processing_duration": 12.01,
                         "travel_duration": 11.38,
                         "successor": 3881650
                     },
                     {
                         "mission_id": 3881650,
-                        "start_time": 101.61,
-                        "finish_time": 113.62,
+                        "start_time": 102.0,
+                        "finish_time": 114.0,
                         "processing_duration": 12.01,
-                        "travel_duration": 11.38,
+                        "travel_duration": 11.76,
                         "successor": null
                     }
                 ]

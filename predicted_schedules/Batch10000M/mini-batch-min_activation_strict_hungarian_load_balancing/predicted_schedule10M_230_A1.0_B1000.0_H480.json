@@ -20,60 +20,60 @@
                         "finish_time": 21.6,
                         "processing_duration": 10.98,
                         "travel_duration": 10.62,
-                        "successor": 3885458
+                        "successor": 3888188
                     },
                     {
-                        "mission_id": 3885458,
-                        "start_time": 32.45,
-                        "finish_time": 43.43,
-                        "processing_duration": 10.98,
-                        "travel_duration": 10.85,
-                        "successor": 3885438
+                        "mission_id": 3888188,
+                        "start_time": 32.47,
+                        "finish_time": 43.48,
+                        "processing_duration": 11.01,
+                        "travel_duration": 10.87,
+                        "successor": 3888190
                     },
                     {
-                        "mission_id": 3885438,
-                        "start_time": 54.27,
-                        "finish_time": 65.25,
-                        "processing_duration": 10.98,
+                        "mission_id": 3888190,
+                        "start_time": 54.33,
+                        "finish_time": 65.41,
+                        "processing_duration": 11.09,
                         "travel_duration": 10.85,
                         "successor": 3888187
                     },
                     {
                         "mission_id": 3888187,
-                        "start_time": 76.11,
-                        "finish_time": 87.2,
-                        "processing_duration": 11.09,
-                        "travel_duration": 10.86,
-                        "successor": 3888190
-                    },
-                    {
-                        "mission_id": 3888190,
-                        "start_time": 98.07,
-                        "finish_time": 109.15,
+                        "start_time": 76.28,
+                        "finish_time": 87.37,
                         "processing_duration": 11.09,
                         "travel_duration": 10.87,
-                        "successor": 3888188
+                        "successor": 3885438
                     },
                     {
-                        "mission_id": 3888188,
-                        "start_time": 120.0,
-                        "finish_time": 131.01,
-                        "processing_duration": 11.01,
-                        "travel_duration": 10.85,
+                        "mission_id": 3885438,
+                        "start_time": 98.23,
+                        "finish_time": 109.21,
+                        "processing_duration": 10.98,
+                        "travel_duration": 10.86,
                         "successor": 3888191
                     },
                     {
                         "mission_id": 3888191,
-                        "start_time": 141.87,
-                        "finish_time": 152.89,
+                        "start_time": 120.08,
+                        "finish_time": 131.1,
                         "processing_duration": 11.03,
-                        "travel_duration": 10.86,
+                        "travel_duration": 10.87,
+                        "successor": 3885458
+                    },
+                    {
+                        "mission_id": 3885458,
+                        "start_time": 141.97,
+                        "finish_time": 152.95,
+                        "processing_duration": 10.98,
+                        "travel_duration": 10.87,
                         "successor": 3890014
                     },
                     {
                         "mission_id": 3890014,
-                        "start_time": 163.76,
-                        "finish_time": 174.79,
+                        "start_time": 163.82,
+                        "finish_time": 174.84,
                         "processing_duration": 11.03,
                         "travel_duration": 10.87,
                         "successor": null

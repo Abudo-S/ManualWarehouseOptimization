@@ -15,27 +15,27 @@
             "routes": [
                 [
                     {
-                        "mission_id": 3882173,
+                        "mission_id": 3882196,
                         "start_time": 10.61,
-                        "finish_time": 21.92,
-                        "processing_duration": 11.31,
+                        "finish_time": 21.73,
+                        "processing_duration": 11.12,
                         "travel_duration": 10.61,
                         "successor": 3882162
                     },
                     {
                         "mission_id": 3882162,
-                        "start_time": 32.73,
-                        "finish_time": 44.09,
+                        "start_time": 32.57,
+                        "finish_time": 43.93,
                         "processing_duration": 11.35,
-                        "travel_duration": 10.81,
-                        "successor": 3882196
+                        "travel_duration": 10.84,
+                        "successor": 3882173
                     },
                     {
-                        "mission_id": 3882196,
-                        "start_time": 54.93,
+                        "mission_id": 3882173,
+                        "start_time": 54.74,
                         "finish_time": 66.05,
-                        "processing_duration": 11.12,
-                        "travel_duration": 10.84,
+                        "processing_duration": 11.31,
+                        "travel_duration": 10.81,
                         "successor": null
                     }
                 ]
