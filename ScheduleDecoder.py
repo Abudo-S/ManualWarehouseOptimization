@@ -1079,7 +1079,7 @@ class ScheduleDecoder:
         """
         Exports a schedule strictly following the auto-regressive logic: [activation -> assignment -> sequence]
         Activation: select active operators based on model probabilities.
-        Assignment: greedily assign orders only to active operators based on assignment probs.
+        Assignment: [GLOBAL "not only activated ops"] greedily assign orders only to active operators based on assignment probs.
         Sequence: route assigned orders per operator using sequence probs and time constraints.
         If an order fails to route due to H_fixed, it falls back to the next best 
         activation-assignment probability bucket. If all active ops are full, it falls back to inactive ops.
@@ -4478,7 +4478,7 @@ def decode_autoregressive(model, loader, scheduleDecoder, isRecurrent=True, devi
 
 if __name__ == "__main__":
     use_large_scale = False
-    use_autoregressive_decoding = False
+    use_autoregressive_decoding = True
 
     if use_large_scale:
         #init large-scale dataset
