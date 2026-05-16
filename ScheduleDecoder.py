@@ -3927,10 +3927,10 @@ class ScheduleDecoder:
             assign_edge_index = batch['operator', 'assign', 'order'].edge_index
             assign_edge_attr = batch['operator', 'assign', 'order'].edge_attr
 
-            # Temperature scaling
+            #temperature scaling
             temperature = 1.0 + (TEMPERATURE_SCALING_FACTOR * num_orders)
-            assign_probs_clipped = torch.clamp(assign_probs_raw, min=1e-8, max=1.0 - 1e-8)
-            raw_logits = torch.log(assign_probs_clipped / (1.0 - assign_probs_clipped))
+            assign_probs_clipped = torch.clamp(assign_probs_raw, min=1e-8, max=1.0 - 1e-8) 
+            raw_logits = torch.log(assign_probs_clipped / (1.0 - assign_probs_clipped)) #convert probabilities to logits for stable temperature scaling
             scaled_assign_probs = torch.sigmoid(raw_logits / temperature)
 
             is_assigned_flag = x_dict_raw['order'][:, 10].view(-1)

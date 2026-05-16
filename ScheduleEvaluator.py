@@ -262,7 +262,8 @@ class ScheduleEvaluator:
                       heuristic_boost_factor=1.15):
         """
         computes weighted BCE loss for activation, assignment, and sequence heads.
-        total Loss = beta * act_loss + alpha * (assign_loss + seq_loss) + capacity_penalty
+        total wighted Loss = beta * act_loss + alpha * (assign_loss + seq_loss) + capacity_penalty
+        (prefered) total Loss =  act_loss + (assign_loss + seq_loss) + capacity_penalty
 
         We should not artificially force the final weighted loss to be between 0 and 1 
         (e.g., by passing it through a sigmoid or clamping it).
@@ -850,13 +851,13 @@ class ScheduleEvaluator:
                     batch_l_act += l_act
                     batch_l_seq += l_seq
 
-                    #dynamic state update for ALL steps in chunk
+                    #dynamic state update for all steps in chunk
                     next_order_x = x_dict_raw['order'].clone()
                     next_op_x = x_dict_raw['operator'].clone()
                     next_last_order_emb = last_order_emb.clone()
                     
                     for true_op_id, true_order_id, edge_mask in chunk_edge_masks:
-                        next_order_x[true_order_id, 10] = 1.0 
+                        next_order_x[true_order_id, 10] = 1.0   #mark order as assigned
                         
                         time_taken = batch['operator', 'assign', 'order'].edge_attr[edge_mask, 0]
                         if batch['operator', 'assign', 'order'].edge_attr.size(1) > 1:

@@ -330,7 +330,7 @@ class MultiCriteriaGNNModel(torch.nn.Module):
         if src_monotonic_id.dim() == 1:
             src_monotonic_id = src_monotonic_id.unsqueeze(1)
 
-        #calculate Order angle [0, 1] based on geographic coordinates
+        #calculate order angle [0, 1] based on geographic coordinates
         ord_x_dest = raw_ord_x[dst_idx]
         ord_y_dest = raw_ord_y[dst_idx]
         
