@@ -16,11 +16,25 @@ MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_di
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
 MISSION_LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/Batch_1_100M_travel_distanced.csv"
 MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
-FORK_LIFTS_DIR = "./datasets/ForkLifts100W.csv"
+FORK_LIFTS_DIR = "./datasets/ForkLifts200W.csv"
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
 SCHEDULE_DIR = "./schedules/mini-batch/"
 GREEDY_SCHEDULE_OUTPUT_DIR = "./output/greedy_schedules/"
+
 BIG_M = 1e5
+
+AUG_SEEDS = {
+    '': None,
+    'aug_extreme_shift+200X': 42,
+    'aug_extreme_shift+200Y': 43,
+    'aug_flipped_x-axis': 44,
+    'aug_flipped_y-axis': 45,
+    'aug_shifted_+20X_+20Y': 46,
+    'aug_shifted_+50X_-50Y': 47,
+    'aug_shifted_-20X_-20Y': 48,
+    'aug_shifted_-50X_+50Y': 49,
+    'aug_swapped_x&y': 50
+}
 
 class GreedyScheduleGenerator:
     def __init__(self, 
@@ -103,26 +117,46 @@ class GreedyScheduleGenerator:
             
             print(f"Processing Batch {item['id']} -> {item['filename']}")
             
-            self._generate_greedy_schedule(
-                batch_file=item['node'],
-                travel_file=item['edge'],
-                df_ops=df_ops,
-                df_pallet_types=df_pallet_types,
-                file_name=item['filename'],
-                horizon=h_fixed,
-                batch_id=item['id']
-            )
+            for seed_alias, random_seed in AUG_SEEDS.items():  # Generate one deterministic schedule and two with different random seeds
+                self._generate_greedy_schedule(
+                    batch_file=item['node'],
+                    travel_file=item['edge'],
+                    df_ops=df_ops,
+                    df_pallet_types=df_pallet_types,
+                    file_name=item['filename'],
+                    horizon=h_fixed,
+                    batch_id=item['id'],
+                    random_seed=random_seed,
+                    seed_alias=seed_alias
+                )
 
-    def _generate_greedy_schedule(self, batch_file, travel_file, df_ops, df_pallet_types, file_name, horizon, batch_id):
+    def _generate_greedy_schedule(self,
+                                  batch_file,
+                                  travel_file, 
+                                  df_ops, df_pallet_types, 
+                                  file_name, 
+                                  horizon, 
+                                  batch_id, 
+                                  random_seed=None, 
+                                  seed_alias=None):
         """
             Core logic to generate greedy assignment while minimizing
             local makespan and activations heuristically, utilizing ParameterDataLoader.
         """
         
-        mission_batch_df = pd.read_csv(batch_file)
+        mission_batch_df = pd.read_csv(batch_file).dropna(subset=['CD_MISSION'])
+
+        if random_seed is not None:
+            mission_batch_df = mission_batch_df.sample(frac=1, random_state=random_seed).reset_index(drop=True)
+
         mission_batch_travel_df = pd.read_csv(travel_file)
         mission_batch_travel_df = mission_batch_travel_df.dropna(subset=['CD_MISSION_1', 'CD_MISSION_2'])
         
+        # if '30_500M' in batch_file:
+        #     print(f"Processing Batch {batch_file}")
+        #     for row_num, mission_id in enumerate(mission_batch_df['CD_MISSION'], start=1):
+        #         print(f"Row {row_num}: {mission_id}")
+
         #clean ids strictly in the dataframe
         mission_batch_df['CD_MISSION'] = mission_batch_df['CD_MISSION'].astype(str).str.replace(',', '').astype(int)
         mission_batch_travel_df['CD_MISSION_1'] = mission_batch_travel_df['CD_MISSION_1'].astype(str).str.replace(',', '').astype(int)
@@ -153,6 +187,8 @@ class GreedyScheduleGenerator:
         df_missions_batch_with_base = pd.concat([pd.DataFrame([BASE_MISSION], columns=mission_batch_df_scaled.columns), mission_batch_df_scaled], ignore_index=True)
 
         available_operators = df_ops.iloc[:, 0].astype(str).tolist()
+        #we suppose that in real-world scenarios, the number of available operators is limited and known (likely to the upper bound).
+        #So we can set a reasonable upper bound for the greedy algorithm to explore.
         max_operators = len(available_operators)
         
         parameter_data_loader = ParameterDataLoader(
@@ -221,6 +257,7 @@ class GreedyScheduleGenerator:
         final_ops_state = None
         
         #increase operators incrementally until horizon is met or max operators is reached
+        valid_schedule = True
         while num_operators <= max_operators:
             ops = [{'id': available_operators[i], 'time': 0.0, 'last_mission': None, 'schedule': []} 
                    for i in range(num_operators)]
@@ -324,7 +361,7 @@ class GreedyScheduleGenerator:
             "metadata": {
                 "num_orders": len(missions),
                 "num_operators": len(formatted_operators),
-                "valid": len(horizon_violations) == 0,
+                "valid": len(horizon_violations) == 0 and valid_schedule,
                 "schedule_id": f"{file_name.replace('Batch', 'schedule')}",
                 "horizon_valid": len(horizon_violations) == 0,
                 "horizon_violations": horizon_violations
@@ -332,8 +369,12 @@ class GreedyScheduleGenerator:
             "operators": formatted_operators
         }
         
-        output_file_path = os.path.join(self.output_dir, f"{file_name.replace('Batch','predicted_schedule').replace('.csv', '.json')}")
+        output_file_path = os.path.join(
+                                self.output_dir, 
+                                f"{file_name.replace('Batch', 'greedy_schedule').replace('.csv', '.json' if random_seed is None else f'_{seed_alias}.json')}"
+                            )
         with open(output_file_path, 'w') as f:
+            print(f"Generated schedule: {output_file_path}")
             json.dump(output_data, f, indent=4)
 
 if __name__ == "__main__":
