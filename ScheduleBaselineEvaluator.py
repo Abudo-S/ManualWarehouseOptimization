@@ -86,11 +86,14 @@ class ScheduleBaselineEvaluator:
                     print(f"Warning: Greedy schedule {greedy_filename} not found for {filename}")
 
     def _extract_metrics_from_json(self, json_path):
-        """Helper method to parse JSON schedule and extract metrics"""
+        """
+            calculate makespan, active operators, total flow time, cv for schedule
+        """
+
         with open(json_path, 'r') as f:
             data = json.load(f)
             
-        isScheduleValid = data.get('is_valid', False)
+        isScheduleValid = data.get('metadata', {}).get('valid', False)
 
         if not isScheduleValid:
             #if the schedule is invalid, we can assign worst-case metrics or skip it
@@ -155,7 +158,7 @@ class ScheduleBaselineEvaluator:
                 'batch_num': item['batch_num'],
                 'predicted_makespan': pred_makespan,
                 'greedy_makespan': greedy_makespan,
-                'gap_percentage': gap
+                'baseline_gap': gap
             })
             
         return results
@@ -179,14 +182,16 @@ class ScheduleBaselineEvaluator:
                 'batch_num': item['batch_num'],
                 'predicted_operators': pred_ops,
                 'greedy_operators': greedy_ops,
-                'gap_percentage': gap
+                'baseline_gap': gap
             })
             
         return results
 
     def evaluate_total_flow_time_improvement(self):
         """
-        Evaluates total flow time (sum of all completion times)."""
+            Evaluates total flow time (sum of all completion times).
+        """
+
         results = []
         for item in self.items:
             pred_metrics = self._extract_metrics_from_json(item['predicted_schedule_path'])
@@ -201,7 +206,7 @@ class ScheduleBaselineEvaluator:
                 'batch_num': item['batch_num'],
                 'predicted_flow_time': pred_flow,
                 'greedy_flow_time': greedy_flow,
-                'gap_percentage': gap
+                'baseline_gap': gap
             })
             
         return results
@@ -225,16 +230,16 @@ class ScheduleBaselineEvaluator:
                 'batch_num': item['batch_num'],
                 'predicted_cv': pred_cv,
                 'greedy_cv': greedy_cv,
-                'gap_percentage': gap
+                'baseline_gap': gap
             })
             
         return results
 
     def evaluate_combined_improvement(self):
         """
-        Combines makespan and activation improvement gaps using the normalized alpha and beta weights.
-        Produces a single combined gap metric evaluating how much better (or worse) the GNN performs 
-        compared to the Greedy Baseline.
+            Combines makespan and activation improvement gaps using the normalized alpha and beta weights.
+            Produces a single combined gap metric evaluating how much better (or worse) the GNN performs 
+            compared to the greedy baseline.
         """
         overall_results = []
 
@@ -273,40 +278,13 @@ class ScheduleBaselineEvaluator:
                 'greedy_activations': greedy_activation,
                 'combined_pred_score': combined_pred_score,
                 'combined_greedy_score': combined_greedy_score,
-                'makespan_gap_percentage': round(makespan_gap, 4) * 100,
-                'activation_gap_percentage': round(activation_gap, 4) * 100,
-                'combined_gap_percentage': round(combined_gap, 4) * 100
+                'makespan_baseline_gap': round(makespan_gap, 4) * 100,
+                'activation_baseline_gap': round(activation_gap, 4) * 100,
+                'combined_baseline_gap': round(combined_gap, 4) * 100
             })
             
         return overall_results
-    
-    def print_summary_report(self):
-        """
-            Prints an aggregated report across all evaluated metrics.
-        """
 
-        makespan_results = self.evaluate_makespan_improvement()
-        activation_results = self.evaluate_activation_improvement()
-        flow_results = self.evaluate_total_flow_time_improvement()
-        cv_results = self.evaluate_coefficient_variation_improvement()
-        
-        if not makespan_results:
-            print("No matching schedule pairs found.")
-            return
-
-        avg_makespan_gap = np.mean([r['gap_percentage'] for r in makespan_results])
-        avg_activation_gap = np.mean([r['gap_percentage'] for r in activation_results])
-        avg_flow_gap = np.mean([r['gap_percentage'] for r in flow_results])
-        avg_cv_gap = np.mean([r['gap_percentage'] for r in cv_results])
-        
-        print("\n=== Schedule Baseline Evaluator Summary ===")
-        print(f"Total Batches Evaluated: {len(makespan_results)}")
-        print("\n--- Average Improvement over Greedy Baseline (Negative is better) ---")
-        print(f"Makespan Gap: {avg_makespan_gap:.2f}%")
-        print(f"Operator Activation Gap: {avg_activation_gap:.2f}%")
-        print(f"Total Flow Time Gap: {avg_flow_gap:.2f}%")
-        print(f"Workload Balance (CV) Gap: {avg_cv_gap:.2f}%")
-        print("===========================================\n")
 
 if __name__ == "__main__":
         
@@ -315,4 +293,21 @@ if __name__ == "__main__":
         predicted_schedule_dir=PREDICTED_LARGE_SCHEDULE_DIR
     )
 
-    evaluator.print_summary_report()
+    makespan_results = evaluator.evaluate_makespan_improvement()
+    activation_results = evaluator.evaluate_activation_improvement()
+    flow_results = evaluator.evaluate_total_flow_time_improvement()
+    cv_results = evaluator.evaluate_coefficient_variation_improvement()
+
+    avg_makespan_gap = np.mean([makespan_result['baseline_gap'] for makespan_result in makespan_results])
+    avg_activation_gap = np.mean([activation_result['baseline_gap'] for activation_result in activation_results])
+    avg_flow_gap = np.mean([flow_result['baseline_gap'] for flow_result in flow_results])
+    avg_cv_gap = np.mean([cv_result['baseline_gap'] for cv_result in cv_results])
+
+    print("\n=== Schedule baseline evaluator summary ===")
+    print(f"Total batches evaluated: {len(makespan_results)}")
+    print("\n---Average improvement over greedy baseline---")
+    print(f"Makespan gap: {avg_makespan_gap:.2f}%")
+    print(f"Operator activation gap: {avg_activation_gap:.2f}%")
+    print(f"TFT gap: {avg_flow_gap:.2f}%")
+    print(f"CV gap: {avg_cv_gap:.2f}%")
+    print("===========================================\n")
