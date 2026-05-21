@@ -107,8 +107,7 @@ class ScheduleBaselineEvaluator:
         
         operators = data.get('operators', [])
         
-        makespans = []
-        flow_times = []
+        tfts = []
         
         for op in operators:
             routes = op.get('routes', [[]])[0]
@@ -116,19 +115,16 @@ class ScheduleBaselineEvaluator:
                 continue
                 
             #local makespan is the finish time of the last task
-            local_makespan = routes[-1]['finish_time']
-            makespans.append(local_makespan)
+            local_tft = routes[-1]['finish_time']
+            tfts.append(local_tft)
             
-            #flow time is the sum of finish times of all tasks for this operator
-            flow_times.extend([task['finish_time'] for task in routes])
-            
-        global_makespan = max(makespans) if makespans else 0.0
-        active_operators = len(makespans)
-        total_flow_time = sum(flow_times)
+        global_makespan = max(tfts) if tfts else 0.0
+        active_operators = len(tfts)
+        total_flow_time = sum(tfts) #flow time is the sum of finish times of the last task for any operator
         
-        #cv of makespans
-        mean_makespan = np.mean(makespans) if makespans else 0.0
-        std_makespan = np.std(makespans) if makespans else 0.0
+        #cv of tfts across operators to evaluate workload balance (lower is better)
+        mean_makespan = np.mean(tfts) if tfts else 0.0
+        std_makespan = np.std(tfts) if tfts else 0.0
         cv = (std_makespan / mean_makespan) if mean_makespan > 0 else 0.0
         
         return {
@@ -156,7 +152,7 @@ class ScheduleBaselineEvaluator:
             
             results.append({
                 'batch_num': item['batch_num'],
-                'predicted_makespan': pred_makespan,
+                'pred_makespan': pred_makespan,
                 'greedy_makespan': greedy_makespan,
                 'baseline_gap': gap
             })
@@ -180,8 +176,8 @@ class ScheduleBaselineEvaluator:
             
             results.append({
                 'batch_num': item['batch_num'],
-                'predicted_operators': pred_ops,
-                'greedy_operators': greedy_ops,
+                'pred_activation': pred_ops,
+                'greedy_activation': greedy_ops,
                 'baseline_gap': gap
             })
             
@@ -204,8 +200,8 @@ class ScheduleBaselineEvaluator:
             
             results.append({
                 'batch_num': item['batch_num'],
-                'predicted_flow_time': pred_flow,
-                'greedy_flow_time': greedy_flow,
+                'pred_total_flow_time': pred_flow,
+                'greedy_total_flow_time': greedy_flow,
                 'baseline_gap': gap
             })
             
@@ -228,7 +224,7 @@ class ScheduleBaselineEvaluator:
             
             results.append({
                 'batch_num': item['batch_num'],
-                'predicted_cv': pred_cv,
+                'pred_cv': pred_cv,
                 'greedy_cv': greedy_cv,
                 'baseline_gap': gap
             })
@@ -257,8 +253,8 @@ class ScheduleBaselineEvaluator:
             activation_gap = (pred_activation - greedy_activation) / greedy_activation if greedy_activation > 0 and greedy_activation != float('inf') else -100
             
             #normalize alpha, beta to sum to 1 for weighting
-            alpha = alpha / (alpha + beta)
-            beta = beta / (alpha + beta)
+            alpha = item['alpha'] / (item['alpha'] + item['beta'])
+            beta = item['beta'] / (item['alpha'] + item['beta'])
             
             #combined scores
             combined_pred_score = alpha * pred_makespan + beta * pred_activation
@@ -274,8 +270,8 @@ class ScheduleBaselineEvaluator:
                 'h_fixed': item['h_fixed'],
                 'pred_makespan': pred_makespan,
                 'greedy_makespan': greedy_makespan,
-                'pred_activations': pred_activation,
-                'greedy_activations': greedy_activation,
+                'pred_activation': pred_activation,
+                'greedy_activation': greedy_activation,
                 'combined_pred_score': combined_pred_score,
                 'combined_greedy_score': combined_greedy_score,
                 'makespan_baseline_gap': round(makespan_gap, 4) * 100,
