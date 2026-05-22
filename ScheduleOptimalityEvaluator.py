@@ -69,7 +69,10 @@ class ScheduleOptimalityEvaluator:
                 'h_fixed': h_fixed
             })
 
-    def evaluate_makespan_optimality(self):
+    def find_available_time_horizons(self):
+        return sorted(set(item['h_fixed'] for item in self.items))
+    
+    def evaluate_makespan_optimality(self, time_horizon=None):
         """
         Evaluates the makespan optimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
         the negative gap means that the predicted schedule is better than optimal schedule (which can never happen),
@@ -81,6 +84,9 @@ class ScheduleOptimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             opt_path = item['optimal_schedule_path']
@@ -119,7 +125,7 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
     
-    def evaluate_activation_optimality(self):
+    def evaluate_activation_optimality(self, time_horizon=None):
         """
         Evaluates the optimality of each batch predicted schedules in terms of number of activations (operators used), compared to the optimal schedules.
         Optimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
@@ -128,6 +134,9 @@ class ScheduleOptimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             opt_path = item['optimal_schedule_path']
@@ -157,7 +166,7 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
 
-    def evaluate_combined_optimality(self):
+    def evaluate_combined_optimality(self, time_horizon=None):
         """
         Combines makespan and activation optimality gaps using the provided normalized alpha and beta weights per batch,
         to compute a single combined optimality gap metric for each batch schedule.
@@ -167,6 +176,9 @@ class ScheduleOptimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             opt_path = item['optimal_schedule_path']
@@ -217,7 +229,7 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
 
-    def evaluate_total_flow_time_optimality(self):
+    def evaluate_total_flow_time_optimality(self, time_horizon=None):
         """
         Evaluates the total_flow_time optimality gap for each predicted batch schedule compared to its corresponding optimal schedule.
         Optimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
@@ -228,6 +240,9 @@ class ScheduleOptimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             opt_path = item['optimal_schedule_path']
@@ -268,7 +283,7 @@ class ScheduleOptimalityEvaluator:
             
         return overall_results
 
-    def evaluate_coefficient_variation_optimality(self):
+    def evaluate_coefficient_variation_optimality(self, time_horizon=None):
         """
         Evaluates cv optimality gap for each predicted batch schedule compared to its corresponding optimal schedule, across different alpha, beta, h_fixed values.
         """
@@ -276,6 +291,9 @@ class ScheduleOptimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             opt_path = item['optimal_schedule_path']

@@ -85,6 +85,9 @@ class ScheduleBaselineEvaluator:
                 else:
                     print(f"Warning: Greedy schedule {greedy_filename} not found for {filename}")
 
+    def find_available_time_horizons(self):
+        return sorted(set(item['h_fixed'] for item in self.items))
+    
     def _extract_metrics_from_json(self, json_path):
         """
             calculate makespan, active operators, total flow time, cv for schedule
@@ -134,13 +137,16 @@ class ScheduleBaselineEvaluator:
             'cv': cv
         }
 
-    def evaluate_makespan_improvement(self):
+    def evaluate_makespan_improvement(self, time_horizon=None):
         """
            Evaluates how much the GNN model predicted schedule improves makespan over the greedy baseline.
         """
 
         results = []
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             pred_metrics = self._extract_metrics_from_json(item['predicted_schedule_path'])
             greedy_metrics = self._extract_metrics_from_json(item['greedy_schedule_path'])
             
@@ -159,13 +165,16 @@ class ScheduleBaselineEvaluator:
             
         return results
 
-    def evaluate_activation_improvement(self):
+    def evaluate_activation_improvement(self, time_horizon=None):
         """
             Evaluates how the GNN operator activation compares to the greedy baseline.
         """
 
         results = []
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             pred_metrics = self._extract_metrics_from_json(item['predicted_schedule_path'])
             greedy_metrics = self._extract_metrics_from_json(item['greedy_schedule_path'])
             
@@ -183,13 +192,16 @@ class ScheduleBaselineEvaluator:
             
         return results
 
-    def evaluate_total_flow_time_improvement(self):
+    def evaluate_total_flow_time_improvement(self, time_horizon=None):
         """
             Evaluates total flow time (sum of all completion times).
         """
 
         results = []
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             pred_metrics = self._extract_metrics_from_json(item['predicted_schedule_path'])
             greedy_metrics = self._extract_metrics_from_json(item['greedy_schedule_path'])
             
@@ -207,13 +219,16 @@ class ScheduleBaselineEvaluator:
             
         return results
 
-    def evaluate_coefficient_variation_improvement(self):
+    def evaluate_coefficient_variation_improvement(self, time_horizon=None):
         """
             Evaluates workload balancing between operators (lower CV is better).
         """
 
         results = []
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             pred_metrics = self._extract_metrics_from_json(item['predicted_schedule_path'])
             greedy_metrics = self._extract_metrics_from_json(item['greedy_schedule_path'])
             
@@ -231,7 +246,7 @@ class ScheduleBaselineEvaluator:
             
         return results
 
-    def evaluate_combined_improvement(self):
+    def evaluate_combined_improvement(self, time_horizon=None):
         """
             Combines makespan and activation improvement gaps using the normalized alpha and beta weights.
             Produces a single combined gap metric evaluating how much better (or worse) the GNN performs 
@@ -240,6 +255,9 @@ class ScheduleBaselineEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+            
             pred_metrics = self._extract_metrics_from_json(item['predicted_schedule_path'])
             greedy_metrics = self._extract_metrics_from_json(item['greedy_schedule_path'])
             

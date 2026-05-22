@@ -104,7 +104,10 @@ class ScheduleMinimalityEvaluator:
             else:
                 print(f"Missing mission or travel file for batch {batch_num}")
     
-    def evaluate_total_flow_time_minimality(self):
+    def find_available_time_horizons(self):
+        return sorted(set(item['h_fixed'] for item in self.items))
+
+    def evaluate_total_flow_time_minimality(self, time_horizon=None):
         """
         Evaluates the total_flow_time minimality gap for each predicted batch schedule compared to its corresponding minimum schedule.
         the negative gap means that the predicted schedule is better than minimal schedule (which can never happen),
@@ -115,6 +118,9 @@ class ScheduleMinimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             batch_mission_path = item['batch_mission_path']
@@ -211,7 +217,7 @@ class ScheduleMinimalityEvaluator:
             
         return overall_results
     
-    def evaluate_activation_minimality(self, total_flow_time_results):
+    def evaluate_activation_minimality(self, total_flow_time_results, time_horizon=None):
         """
         Evaluates the minimality of each batch predicted schedules in terms of number of activations (operators used), compared to the minimal values.
         Minimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
@@ -220,6 +226,9 @@ class ScheduleMinimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             min_total_flow_time = [total_flow_time_result['min_total_flow_time'] for total_flow_time_result in total_flow_time_results if total_flow_time_result['batch_num'] == batch_num][0]
@@ -248,7 +257,7 @@ class ScheduleMinimalityEvaluator:
             
         return overall_results
     
-    def evaluate_makespan_minimality(self, total_flow_time_results, activation_results):
+    def evaluate_makespan_minimality(self, total_flow_time_results, activation_results, time_horizon=None):
         """
         Evaluates the minimality of each batch predicted schedules in terms of number of makespan (operators used), compared to the minimal values.
         Minimality gap is converted to percentage for easier interpretation (e.g. 0.05 becomes 5% gap).
@@ -257,6 +266,9 @@ class ScheduleMinimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             min_total_flow_time = [total_flow_time_result['min_total_flow_time'] for total_flow_time_result in total_flow_time_results if total_flow_time_result['batch_num'] == batch_num][0]
@@ -289,7 +301,7 @@ class ScheduleMinimalityEvaluator:
             
         return overall_results
 
-    def evaluate_combined_minimality(self):
+    def evaluate_combined_minimality(self, time_horizon=None):
         """
         Combines makespan and activation minimality gaps using the provided normalized alpha and beta weights per batch,
         to compute a single combined minimality gap metric for each batch schedule.
@@ -299,6 +311,9 @@ class ScheduleMinimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             batch_mission_path = item['batch_mission_path']
@@ -417,7 +432,7 @@ class ScheduleMinimalityEvaluator:
             
         return overall_results
     
-    def evaluate_coefficient_of_variation_minimality(self):
+    def evaluate_coefficient_of_variation_minimality(self, time_horizon=None):
         """
         Evaluates the minimality of each batch's predicted schedules in terms of 
         workload balancing, using the Coefficient of Variation (CV).
@@ -428,6 +443,9 @@ class ScheduleMinimalityEvaluator:
         overall_results = []
 
         for item in self.items:
+            if time_horizon is not None and item['h_fixed'] != time_horizon:
+                continue
+            
             batch_num = item['batch_num']
             pred_path = item['predicted_schedule_path']
             alpha = item['alpha']
