@@ -1000,6 +1000,156 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         
         return best_threshold, best_f1
     
+    def find_PRC_data(self, target_head):
+        """
+        Finds the data points for the Precision-Recall Curve for a specific head.
+        Useful to plot PRC and AUPRC per a specific head {activation, assignment, sequence}.
+        """
+
+        print(f"Finding PRC data for {target_head}...")
+        self.model.eval()
+        
+        #determine which heads to tune
+        assert target_head is not None, "target_head must be specified!"
+
+        target_heads = [target_head]
+
+        #dicts to store flattened predictions and labels per head
+        head_data = {h: {'probs': [], 'labels': []} for h in target_heads}
+        
+        loader = DataLoader(self.schedule_val_dataset, batch_size=self.batch_size, shuffle=False)
+        
+        with torch.no_grad():
+           for batch in loader:
+                batch = batch.to(self.device)
+                
+                batch_dict_arg = {
+                    'operator': batch['operator'].batch if hasattr(batch['operator'], 'batch') else torch.zeros(batch['operator'].x.size(0), dtype=torch.long, device=self.device),
+                    'order': batch['order'].batch if hasattr(batch['order'], 'batch') else torch.zeros(batch['order'].x.size(0), dtype=torch.long, device=self.device)
+                }
+                
+                #ground truth steps for bptt unrolling
+                true_assign_edges = batch['operator', 'assign', 'order'].edge_index[:, batch['operator', 'assign', 'order'].y.flatten() == 1]
+                ground_truth_steps = []
+                for i in range(true_assign_edges.size(1)):
+                    op_id = true_assign_edges[0, i].item()
+                    order_id = true_assign_edges[1, i].item()
+                    ground_truth_steps.append((op_id, order_id))
+                    
+                if len(ground_truth_steps) == 0:
+                    continue
+                    
+                #state variables
+                static_embs = None
+                op_hidden = None
+                last_order_emb = None
+                
+                #initialize dynamic features
+                num_orders = batch['order'].x.size(0)
+                order_dynamic = torch.zeros((num_orders, 1), dtype=torch.float, device=self.device)
+                new_order_x = torch.cat([batch['order'].x, order_dynamic], dim=1)
+                
+                num_ops = batch['operator'].x.size(0)
+                op_batch = batch_dict_arg['operator']
+                h_fixed_initial = batch.u[op_batch, 2].unsqueeze(1) 
+                op_xy_initial = torch.zeros((num_ops, 2), dtype=torch.float, device=self.device)
+                
+                op_dynamic = torch.cat([h_fixed_initial, op_xy_initial], dim=1)
+                new_op_x = torch.cat([batch['operator'].x, op_dynamic], dim=1)
+                
+                x_dict_raw = {
+                    'order': new_order_x.clone(),
+                    'operator': new_op_x.clone()
+                }
+
+                #unroll the sequence recurrently
+                for step, (true_op_id, true_order_id) in enumerate(ground_truth_steps):
+                    
+                    new_op_hidden, preds, static_embs = self.model(
+                        x_dict_raw=x_dict_raw,
+                        edge_index_dict=batch.edge_index_dict,
+                        edge_attr_dict=batch.edge_attr_dict,
+                        u=batch.u,
+                        batch_dict=batch_dict_arg,
+                        static_embs=static_embs,
+                        op_hidden=op_hidden,
+                        last_order_emb=last_order_emb
+                    )
+                    
+                    if last_order_emb is None:
+                        last_order_emb = torch.zeros_like(static_embs['operator'])
+                    if op_hidden is None:
+                        op_hidden = static_embs['operator']
+
+                    #prepare step-specific ground truth targets
+                    #activation target
+                    target_act = batch['operator'].y.clone()
+                    
+                    #assignment target (only the specific edge at this step is 1)
+                    target_assign = torch.zeros_like(preds['assignment'])
+                    edge_mask = (batch['operator', 'assign', 'order'].edge_index[0] == true_op_id) & \
+                                (batch['operator', 'assign', 'order'].edge_index[1] == true_order_id)
+                    target_assign[edge_mask] = 1.0
+                    
+                    #sequence target (only edges arriving at this step's order are 1)
+                    target_seq = torch.zeros_like(preds['sequence'])
+                    if hasattr(batch['order', 'to', 'order'], 'edge_index'):
+                        seq_mask = (batch['order', 'to', 'order'].edge_index[1] == true_order_id)
+                        target_seq[seq_mask] = 1.0
+
+                    #store predictions and labels for threshold tuning
+                    if 'activation' in target_heads and 'activation' in preds:
+                        head_data['activation']['probs'].append(preds['activation'].detach().cpu().numpy().flatten())
+                        head_data['activation']['labels'].append(target_act.cpu().numpy().flatten())
+                        
+                    if 'assignment' in target_heads and 'assignment' in preds:
+                        head_data['assignment']['probs'].append(preds['assignment'].detach().cpu().numpy().flatten())
+                        head_data['assignment']['labels'].append(target_assign.cpu().numpy().flatten())
+                        
+                    if 'sequence' in target_heads and 'sequence' in preds:
+                        head_data['sequence']['probs'].append(preds['sequence'].detach().cpu().numpy().flatten())
+                        head_data['sequence']['labels'].append(target_seq.cpu().numpy().flatten())
+
+                    #update dynamic features (RFU - teacher forcing) for the next step
+                    next_order_x = x_dict_raw['order'].clone()
+                    next_op_x = x_dict_raw['operator'].clone()
+                    
+                    next_order_x[true_order_id, 10] = 1.0 #mark assigned
+                    
+                    time_taken = batch['operator', 'assign', 'order'].edge_attr[edge_mask, 0]
+                    if batch['operator', 'assign', 'order'].edge_attr.size(1) > 1:
+                        time_taken += batch['operator', 'assign', 'order'].edge_attr[edge_mask, 1]
+                    
+                    next_op_x[true_op_id, 15] -= time_taken.squeeze() #reduce capacity 
+                    next_op_x[true_op_id, 16] = next_order_x[true_order_id, 4] #X coord
+                    next_op_x[true_op_id, 17] = next_order_x[true_order_id, 5] #Y coord
+
+                    x_dict_raw = {'order': next_order_x, 'operator': next_op_x}
+
+                    #pass memory forward
+                    next_last_order_emb = last_order_emb.clone()
+                    next_last_order_emb[true_op_id] = static_embs['order'][true_order_id]
+                    last_order_emb = next_last_order_emb
+                    
+                    next_op_hidden = op_hidden.clone()
+                    next_op_hidden[true_op_id] = new_op_hidden[true_op_id]
+                    op_hidden = next_op_hidden
+                    
+        #evaluate precision-recall curves for all collected probabilities
+        final_thresholds = {}
+        final_f1s = {}
+        
+        for head, data in head_data.items():
+            if not data['probs']:
+                continue
+                
+            y_scores = np.concatenate(data['probs'])
+            y_true = np.concatenate(data['labels'])
+            
+            precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
+
+            return precisions, recalls, thresholds
+    
     def tune_threshold_recurrent(self, target_head=None):
         """
         Finds the optimal classification threshold using the Precision-Recall Curve.
