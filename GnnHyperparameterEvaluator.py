@@ -1006,7 +1006,7 @@ class GnnHyperparameterEvaluator(ScheduleEvaluator):
         Useful to plot PRC and AUPRC per a specific head {activation, assignment, sequence}.
         """
 
-        print(f"Finding PRC data for {target_head}...")
+        print(f"Finding PRC data for {target_head} head...")
         self.model.eval()
         
         #determine which heads to tune
