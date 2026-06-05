@@ -185,12 +185,11 @@ class ScheduleMinimalityEvaluator:
 
             #(cd_mission, cd_mission): travel_time
             {mission_travel_times[k[0]].append(travel_time) for k, travel_time in travel_times.items()}
-            total_travel_mins = [min(p_time) for mission, p_time in mission_travel_times.items()]
+            total_travel_mins = [min(t_time) for mission, t_time in mission_travel_times.items() if mission != 0] #exclude travel times involving the base mission (cd_mission=0) since they don't represent actual mission-to-mission travel
 
             #(oid_fork_lift, cd_mission): processing_time
             {mission_processing_times[k[1]].append(processing_time) for k, processing_time in processing_times.items()}
-            total_processing_mins =[min(p_time) for mission, p_time in mission_processing_times.items()]
-
+            total_processing_mins =[min(p_time) for mission, p_time in mission_processing_times.items() if mission != 0] #exclude processing times involving the base mission (cd_mission=0) since they don't represent actual mission processing
             min_total_flow_time = sum(total_travel_mins) + sum(total_processing_mins)
             t_pruned = (min_total_flow_time/h_fixed) * min(total_travel_mins)
             min_total_flow_time = min_total_flow_time - t_pruned
@@ -378,11 +377,11 @@ class ScheduleMinimalityEvaluator:
 
             #(cd_mission, cd_mission): travel_time
             {mission_travel_times[k[0]].append(travel_time) for k, travel_time in travel_times.items()}
-            total_travel_mins = [min(t_time) for mission, t_time in mission_travel_times.items()]
+            total_travel_mins = [min(t_time) for mission, t_time in mission_travel_times.items() if mission != 0] #exclude travel times involving the base mission (cd_mission=0) since they don't represent actual mission-to-mission travel
 
             #(oid_fork_lift, cd_mission): processing_time
             {mission_processing_times[k[1]].append(processing_time) for k, processing_time in processing_times.items()}
-            total_processing_mins = [min(p_time) for mission, p_time in mission_processing_times.items()]
+            total_processing_mins = [min(p_time) for mission, p_time in mission_processing_times.items() if mission != 0] #exclude processing times involving the base mission (cd_mission=0) since they don't represent actual mission processing
 
             min_total_flow_time = sum(total_travel_mins) + sum(total_processing_mins)
             t_pruned = (min_total_flow_time/h_fixed) * min(total_travel_mins)
