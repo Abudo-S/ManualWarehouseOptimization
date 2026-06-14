@@ -285,11 +285,20 @@ class ScheduleEvaluator:
 
         #BCE losses        
         pos_weight = (true_act.numel() - true_act.sum()) / true_act.sum().clamp(min=1.0)
+        
         act_weight_vector = torch.where(true_act == 1, pos_weight, 1.0)
         loss_act = F.binary_cross_entropy(pred_act, true_act, weight=act_weight_vector) #weighted_act_bce loss
-        #loss_act = F.binary_cross_entropy(pred_act, true_act)
+        
+        # num_assign_neg = (true_assign == 0).sum()
+        # num_assign_pos = (true_assign == 1).sum().clamp(min=1.0)
+        # assign_pos_weight = num_assign_neg / num_assign_pos
+
+        # #apply the weight to the positive assignment labels
+        # #assign_weight_vector = torch.where(true_assign == 1, assign_pos_weight, 1.0)
+        # assign_weight_vector = torch.where(true_assign == 1, assign_pos_weight, 1.0)
+        
+        # loss_assign = F.binary_cross_entropy(pred_assign, true_assign, weight=assign_weight_vector)
         loss_assign = F.binary_cross_entropy(pred_assign, true_assign)
-        #loss_seq = F.binary_cross_entropy(pred_seq, true_seq)
 
         #calculate the positive class weight for sequence labels (edge sparsity can be extreme, e.g. 1% positive labels) 
         #so we need to boost the weight of the positive class accordingly to prevent the model from just predicting all zeros.
