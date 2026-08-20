@@ -22,6 +22,7 @@ MIP_SOLVER_TIME_LIMIT_SECONDS = 300 #5 minutes per mini-batch (can be adjusted b
 #BETA = BIG_M #for aboslute operator minimization count over makespan minimization. (unpreferred for ceplex solver due to numerical issues)
 
 LARGE_SCALE_BATCH_NAME = "Batch10000M"
+REPORT_DIR = f"./reports/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
 UDC_TYPES_DIR = "./datasets/WM_UDC_TYPE.csv"
 MISSION_BATCH_TRAVEL_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_travel_distanced.csv"
@@ -30,6 +31,7 @@ FORK_LIFTS_DIR = "./datasets/ForkLifts10W.csv"
 SCHEDULE_DIR = f"./schedules/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 BATCH_NAME = MISSION_BATCH_DIR.replace(f'./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch', '').replace('_distanced.csv', '')
 BASE_MISSION = [0, 0, 0, 0, 0, 0, 0, 0, 0]  #virtual base mission for operators to start and end their routes
+REPORT_FILE_NAME = f"{REPORT_DIR}mini_batch_schedule_generation_time.txt"
 
 os.makedirs(os.path.dirname('logs/'), exist_ok=True)
 logging.basicConfig(
@@ -258,6 +260,10 @@ class MiniBatchScheduleGenerator:
         features_to_scale = ['FROM_Z','TO_Z']
         possibile_h_fixed = [60, 90, 120, 480]
 
+        if os.path.exists(REPORT_FILE_NAME):
+            #if the report file already exists, remove it to avoid appending to old data
+            os.remove(REPORT_FILE_NAME)
+        
         for mini_batch_number in range(start_n, n_mini_batches + 1):
             print(f'----------------------------WORKING WITH MINI-BATCH [{mini_batch_number}]----------------------------')
             mission_batch_df = pd.read_csv(MISSION_BATCH_DIR.replace('.csv', f'_{mini_batch_number}.csv'))[mission_batch_features]
@@ -347,11 +353,15 @@ class MiniBatchScheduleGenerator:
                                  BIG_M
                                 )
             
+            start = time.perf_counter()
             #instance, results = mcmModel.solve(solver_name="cplex_direct")
             instance, results, is_optimal = mcmModel.solve_hybrid_two_phase(time_limit_phase1=MIP_SOLVER_TIME_LIMIT_SECONDS,
                                                                             time_limit_phase2=MIP_SOLVER_TIME_LIMIT_SECONDS,
                                                                             bin_packing_cut=False,
                                                                             solver_name="cplex_direct")
+            end = time.perf_counter()
+            execution_time_seconds = end - start
+
             logging.info(f"Warning: Suboptimal or infeasible solution for mini-batch ({mini_batch_number}). (Check time limits or numerical tolerances)") if not is_optimal \
                 else logging.info(f"Optimal solution found for mini-batch ({mini_batch_number}).")
             
@@ -361,6 +371,9 @@ class MiniBatchScheduleGenerator:
                 self.save_schedule_steps(instance, batch_name, h_fixed)
 
                 logging.info(f"Successfully generated and saved schedule for mini-batch ({mini_batch_number}).")
+
+                with open(REPORT_FILE_NAME, 'a') as file:
+                    file.write(f"schedule_{batch_name}_A{ALPHA}_B{BETA}_H{h_fixed}: {execution_time_seconds} seconds\n")
             else:
                 logging.warning(f"Skipping schedule saving for mini-batch ({mini_batch_number}) due to suboptimal or infeasible solution.")
 
