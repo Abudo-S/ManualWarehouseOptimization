@@ -20,6 +20,7 @@ from MultiCriteriaGNNModel_AutoRegressive import MultiCriteriaGNNModel_AutoRegre
 from GnnScheduleDataset import GnnScheduleDataset
 
 LARGE_SCALE_BATCH_NAME = "Batch10000M" #Batch1000M, Batch9000M or Batch10000M
+REPORT_DIR = f"./reports/{LARGE_SCALE_BATCH_NAME}/mini-batch/"
 TARGET_MINI_BATCH_SIZE = 10 #number of missions per mini-batch
 LARGE_BATCH_DIR = "./datasets/large-batch/batch/"
 LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/"
@@ -39,6 +40,7 @@ PREDICTED_LARGE_SCHEDULE_DIR = f"./predicted_schedules/large-scale/batch/"
 #tail insertions are orders that have probs under fixed thresholds, need to refined.
 MINI_BATCH_TAIL_INSERTIONS_DIR = f"./tail_insertions/validation_mini-batches.json"
 LARGE_BATCH_TAIL_INSERTIONS_DIR = f"./tail_insertions/test_large-batches.json"
+REPORT_FILE_NAME = f"{REPORT_DIR}mini_batch_schedule_inference_time.txt"
 
 BATCH_SIZE = 32 #nice to be equal to 32 or 64 since we have small mini-batch instances
 H_FIXED_EXCEED_TOLERANCE_MIN = 0.0 #allow schedules to tolerate H_fixed exceedance 
@@ -4397,6 +4399,12 @@ class ScheduleDecoder:
 def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
     idx = 0
     all_executon_times = {}
+
+    report_file_name = REPORT_FILE_NAME.replace('schedule', 'one-shot')
+    if os.path.exists(report_file_name):
+        #if the report file already exists, remove it to avoid appending to old data
+        os.remove(report_file_name)
+
     for batch in loader:
         batch = batch.to(device)
         batch_dict = {'operator': batch['operator'].batch, 'order': batch['order'].batch}
@@ -4441,6 +4449,9 @@ def decode_non_autoregressive(model, loader, scheduleDecoder, device='cuda'):
         end_time = time.perf_counter() #stop time
         execution_time = end_time - start_time
 
+        with open(report_file_name, 'a') as file:
+            file.write(f"{batch.schedule_id[0].replace('Batch', 'schedule')}: {execution_time} seconds\n")
+
         print(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
         logging.info(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
         all_executon_times[batch.schedule_id[0]] = execution_time
@@ -4455,6 +4466,10 @@ def decode_autoregressive(model, loader, scheduleDecoder, isRecurrent=True, devi
     or all operators terminate.
     Estimates masks matching the expected format of the downstream export_schedule pipeline.
     """
+    report_file_name = REPORT_FILE_NAME.replace('schedule', 'recurrent')
+    if os.path.exists(report_file_name):
+        #if the report file already exists, remove it to avoid appending to old data
+        os.remove(report_file_name)
 
     all_executon_times = {}
     for batch_idx, batch in enumerate(loader):
@@ -4470,6 +4485,9 @@ def decode_autoregressive(model, loader, scheduleDecoder, isRecurrent=True, devi
         end_time = time.perf_counter() #stop time
         execution_time = end_time - start_time
 
+        with open(report_file_name, 'a') as file:
+            file.write(f"{batch.schedule_id[0].replace('Batch', 'schedule')}: {execution_time} seconds\n")
+        
         print(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
         logging.info(f"Execution time for schedule_id {batch.schedule_id[0]}: {execution_time:.2f} seconds")
         all_executon_times[batch.schedule_id[0]] = execution_time
