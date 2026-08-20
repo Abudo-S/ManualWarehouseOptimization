@@ -3,13 +3,15 @@ import glob
 import re
 import math
 import json
+import time
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from ParameterDataLoader import ParameterDataLoader
 
-LARGE_SCALE_BATCH_NAME = "Batch1000M" #Batch1000M, Batch9000M or Batch10000M
+LARGE_SCALE_BATCH_NAME = "Batch10000M" #Batch1000M, Batch9000M or Batch10000M
 #file paths
 LARGE_BATCH_DIR = "./datasets/large-batch/batch/"
+REPORT_DIR = f"./reports/{LARGE_SCALE_BATCH_NAME}/large-batch/"
 LARGE_BATCH_TRAVEL_DIR = "./datasets/large-batch/travel/"
 MISSION_LARGE_BATCH_DIR = "./datasets/large-batch/batch/Batch_1_100M_distanced_A1.0_B1000.0_H90.csv"
 MISSION_BATCH_DIR = f"./datasets/{LARGE_SCALE_BATCH_NAME}/mini-batch/Batch10M_distanced.csv"
@@ -20,6 +22,7 @@ FORK_LIFTS_DIR = "./datasets/ForkLifts200W.csv"
 #MISSION_TYPES_DIR = "./datasets/MissionTypes.csv"
 SCHEDULE_DIR = "./schedules/mini-batch/"
 GREEDY_SCHEDULE_OUTPUT_DIR = "./output/greedy_schedules/"
+REPORT_FILE_NAME = f"{REPORT_DIR}full_batch_greedy_schedule_generation_time.txt"
 
 BIG_M = 1e5
 
@@ -112,12 +115,18 @@ class GreedyScheduleGenerator:
         df_ops = pd.read_csv(self.operator_file_path)
         df_pallet_types = pd.read_csv(self.pallet_types_file_path) if self.pallet_types_file_path else None
 
+        if os.path.exists(REPORT_FILE_NAME):
+            #if the report file already exists, remove it to avoid appending to old data
+            os.remove(REPORT_FILE_NAME)
+
         for item in self.items:
             alpha, beta, h_fixed = self.parse_filename_params(item['filename']) 
             
             print(f"Processing Batch {item['id']} -> {item['filename']}")
             
             for seed_alias, random_seed in AUG_SEEDS.items():  # Generate one deterministic schedule and two with different random seeds
+                start = time.perf_counter()
+
                 self._generate_greedy_schedule(
                     batch_file=item['node'],
                     travel_file=item['edge'],
@@ -129,6 +138,13 @@ class GreedyScheduleGenerator:
                     random_seed=random_seed,
                     seed_alias=seed_alias
                 )
+
+                end = time.perf_counter()
+                execution_time_seconds = end - start
+                schedule_file_name = item['filename'].replace('Batch', 'greedy_schedule').replace('.csv', '' if random_seed is None else f'_{seed_alias}')
+
+                with open(REPORT_FILE_NAME, 'a') as file:
+                    file.write(f"{schedule_file_name}: {execution_time_seconds} seconds\n")
 
     def _generate_greedy_schedule(self,
                                   batch_file,
